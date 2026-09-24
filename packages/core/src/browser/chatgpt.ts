@@ -53,8 +53,21 @@ export class ChatGPTBrowser {
 
   /**
    * Send a prompt in a fresh conversation and return the full assistant response text.
+   * Retries once on timeout.
    */
-  async ask(prompt: string, timeoutMs = 480_000): Promise<string> {
+  async ask(prompt: string, timeoutMs = 900_000): Promise<string> {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await this.askOnce(prompt, timeoutMs);
+      } catch (e) {
+        if (attempt === 2) throw e;
+        console.log(`  [chatgpt] ask attempt ${attempt} failed (${String(e).slice(0, 120)}), retrying once...`);
+      }
+    }
+    throw new Error('unreachable');
+  }
+
+  private async askOnce(prompt: string, timeoutMs: number): Promise<string> {
     await this.ensureLoggedIn();
     await this.newConversation();
     const page = this.page!;
@@ -63,8 +76,7 @@ export class ChatGPTBrowser {
 
     const promptBox = page.locator(PROMPT_SELECTOR).first();
     await promptBox.click();
-    // contenteditable: use clipboard paste via CDP-safe evaluate then InsertText,
-    // falling back to sequential typing. fill() doesn't work on contenteditable reliably.
+    // contenteditable: set text + input event; fall back to sequential typing.
     try {
       await promptBox.evaluate((el, text) => {
         (el as HTMLElement).focus();
@@ -77,14 +89,28 @@ export class ChatGPTBrowser {
     await page.waitForTimeout(500);
     await page.keyboard.press('Enter');
 
-    // Wait until generation starts then finishes (stop button appears then disappears),
-    // with a fallback: poll assistant text until stable.
-    await page.waitForTimeout(3000);
+    // Submit confirmation: after Enter, something must happen. If not, click send / retry Enter.
+    await page.waitForTimeout(4000);
+    const started = await page.locator(ASSISTANT_SELECTOR).count();
+    if (started <= before) {
+      const sendBtn = page.locator('button[data-testid="send-button"], button[aria-label*="Send"]').first();
+      if (await sendBtn.count()) {
+        await sendBtn.click().catch(() => {});
+      } else {
+        await promptBox.click().catch(() => {});
+        await page.keyboard.press('Enter');
+      }
+      await page.waitForTimeout(4000);
+    }
+
+    // Wait until generation finishes (stop button appears then disappears),
+    // falling back to stability polling.
+    await page.waitForTimeout(2000);
     try {
-      await page.waitForSelector(STOP_SELECTOR, { timeout: 15_000 });
+      await page.waitForSelector(STOP_SELECTOR, { timeout: 20_000 });
       await page.waitForSelector(STOP_SELECTOR, { state: 'detached', timeout: timeoutMs });
     } catch {
-      // generation may already be done or stop button never appeared — fall through to stability polling
+      // may already be done or stop button never appeared — fall through to stability polling
     }
 
     // Poll until the newest assistant message text stops changing.
@@ -98,12 +124,12 @@ export class ChatGPTBrowser {
         ? (await messages.nth(count - 1).innerText().catch(() => '')) ?? ''
         : '';
       if (current && current === last) {
-        if (++stable >= 3) return current;
+        if (++stable >= 4) return current;
       } else {
         stable = 0;
         last = current;
       }
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
     }
     throw new Error('ChatGPT response timed out or never stabilized');
   }
