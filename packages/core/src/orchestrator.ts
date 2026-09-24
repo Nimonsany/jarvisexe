@@ -71,7 +71,10 @@ export class Orchestrator {
 
       // 2. EXECUTION loop with supervision
       const verificationSpec = parseVerificationSpec(planResponse);
-      await this.executeLoop(task, `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}`, verificationSpec);
+      const dirConstraint = `\n\nCRITICAL CONSTRAINT: Work ONLY inside the project directory: ${task.project_directory}
+Create/modify files there and run all commands with that as the working directory.
+Do NOT modify, delete, or move anything outside that directory (especially not the JARVIS installation itself).`;
+      await this.executeLoop(task, `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}${dirConstraint}`, verificationSpec);
       return task;
     } catch (e) {
       task.last_error = String(e);
