@@ -31,16 +31,20 @@ export class Supervisor {
     return errLine.replace(/\d+/g, '#').slice(0, 120).toLowerCase();
   }
 
-  static outputHasFailure(lines: string[]): boolean {
-    const tail = lines.slice(-80);
-    return tail.some((l) => ERROR_HINTS.test(l)) && !tail.every((l) => PROGRESS_HINTS.test(l));
+  static outputHasFailure(lines: string[], exitCode = 0): boolean {
+    if (exitCode !== 0) return true;
+    // Only the very end of the output reflects the final outcome — earlier
+    // lines legitimately mention past errors ("One failure was hit and fixed").
+    const tail = lines.slice(-15).join('\n');
+    if (/all .*tests? (pass|passed)|passed,\s*0 failed|\b\d+ passed\b.*\b0 failed\b/i.test(tail)) return false;
+    return tail.split('\n').some((l) => ERROR_HINTS.test(l));
   }
 
   /**
    * Decide next step after an OpenCode run finishes with failure output.
    */
   decide(task: Task, outputLines: string[], exitCode: number): SupervisorVerdict {
-    const failed = exitCode !== 0 || Supervisor.outputHasFailure(outputLines);
+    const failed = Supervisor.outputHasFailure(outputLines, exitCode);
     if (!failed) return { kind: 'ok' };
 
     const sig = Supervisor.failureSignature(outputLines);

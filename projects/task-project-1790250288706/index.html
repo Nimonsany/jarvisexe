@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Calculator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1e1e2e;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .calc {
+      width: 300px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #313244;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+    #display {
+      min-height: 64px;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-radius: 8px;
+      background: #11111b;
+      color: #cdd6f4;
+      font-size: 2rem;
+      text-align: right;
+      word-break: break-all;
+    }
+    .buttons {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    button {
+      padding: 16px 0;
+      font-size: 1.25rem;
+      border: none;
+      border-radius: 8px;
+      background: #45475a;
+      color: #cdd6f4;
+      cursor: pointer;
+      user-select: none;
+    }
+    button:hover { background: #585b70; }
+    button:active { transform: scale(0.97); }
+    .op { background: #89b4fa; color: #1e1e2e; }
+    .op:hover { background: #74c7ec; }
+    .eq { background: #a6e3a1; color: #1e1e2e; }
+    .eq:hover { background: #94e2d5; }
+    .clear { background: #f38ba8; color: #1e1e2e; }
+    .clear:hover { background: #eba0ac; }
+    .wide { grid-column: span 2; }
+    .tall { grid-row: span 2; }
+  </style>
+</head>
+<body>
+  <div class="calc">
+    <div id="display" aria-live="polite">0</div>
+    <div class="buttons">
+      <button class="clear wide" onclick="clearAll()">C</button>
+      <button class="op" onclick="pressOp('/')">&divide;</button>
+      <button class="op" onclick="pressOp('*')">&times;</button>
+
+      <button onclick="pressDigit('7')">7</button>
+      <button onclick="pressDigit('8')">8</button>
+      <button onclick="pressDigit('9')">9</button>
+      <button class="op" onclick="pressOp('-')">&minus;</button>
+
+      <button onclick="pressDigit('4')">4</button>
+      <button onclick="pressDigit('5')">5</button>
+      <button onclick="pressDigit('6')">6</button>
+      <button class="eq tall" onclick="pressEquals()">=</button>
+
+      <button onclick="pressDigit('1')">1</button>
+      <button onclick="pressDigit('2')">2</button>
+      <button onclick="pressDigit('3')">3</button>
+
+      <button class="wide" onclick="pressDigit('0')">0</button>
+      <button onclick="pressDot()">.</button>
+      <button class="op" onclick="pressOp('+')">+</button>
+    </div>
+  </div>
+
+  <script>
+    function round(x) {
+      return parseFloat(x.toFixed(10));
+    }
+
+    function calculate(a, op, b) {
+      if (op === '+') return round(a + b);
+      if (op === '-') return round(a - b);
+      if (op === '*') return round(a * b);
+      if (op === '/') return b === 0 ? null : round(a / b);
+      return null;
+    }
+
+    let display = '0';
+    let prev = null;
+    let op = null;
+    let freshEntry = true;
+
+    function render() {
+      document.getElementById('display').textContent = display;
+    }
+
+    function showError() {
+      display = 'Error: division by zero';
+      prev = null;
+      op = null;
+      freshEntry = true;
+      render();
+    }
+
+    function pressDigit(d) {
+      if (display.startsWith('Error')) clearAll();
+      if (freshEntry) {
+        display = d;
+        freshEntry = false;
+      } else if (display === '0') {
+        display = d;
+      } else if (display.replace('-', '').length < 15) {
+        display += d;
+      }
+      render();
+    }
+
+    function pressDot() {
+      if (display.startsWith('Error')) clearAll();
+      if (freshEntry) {
+        display = '0.';
+        freshEntry = false;
+      } else if (!display.includes('.')) {
+        display += '.';
+      }
+      render();
+    }
+
+    function pressOp(newOp) {
+      if (display.startsWith('Error')) return;
+      const current = parseFloat(display);
+      if (op !== null && !freshEntry) {
+        const result = calculate(prev, op, current);
+        if (result === null) { showError(); return; }
+        prev = result;
+        display = String(result);
+      } else {
+        prev = current;
+      }
+      op = newOp;
+      freshEntry = true;
+      render();
+    }
+
+    function pressEquals() {
+      if (display.startsWith('Error') || op === null) return;
+      const result = calculate(prev, op, parseFloat(display));
+      if (result === null) { showError(); return; }
+      display = String(result);
+      prev = null;
+      op = null;
+      freshEntry = true;
+      render();
+    }
+
+    function clearAll() {
+      display = '0';
+      prev = null;
+      op = null;
+      freshEntry = true;
+      render();
+    }
+  </script>
+</body>
+</html>
