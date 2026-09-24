@@ -1,0 +1,25 @@
+import { chromium } from 'playwright';
+const b = await chromium.launch({ headless: true, channel: 'chrome' });
+const p = await b.newPage();
+await p.goto('file:///Users/nimon/Desktop/Jarvisexe/jarvis-orchestrator/projects/task-project-1790256265976/index.html');
+await p.waitForTimeout(500);
+const inputs = p.locator('input[type="number"], input[type="text"], input');
+console.log('inputs:', await inputs.count());
+const a = inputs.nth(0), c = inputs.nth(1);
+await a.fill('7');
+await p.locator('button:has-text("×")').click();
+await c.fill('8');
+await p.locator('button:has-text("=")').click();
+await p.waitForTimeout(300);
+const out = ((await p.locator('output').textContent()) ?? '').trim();
+console.log('7 × 8 =', JSON.stringify(out));
+// division by zero
+await a.fill('5');
+await p.locator('button:has-text("/")').click();
+await c.fill('0');
+await p.locator('button:has-text("=")').click();
+await p.waitForTimeout(300);
+console.log('5 / 0 =', JSON.stringify(((await p.locator('output').textContent()) ?? '').trim()));
+await b.close();
+const ok = out === '56';
+process.exit(ok ? 0 : 1);

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calculator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      display: flex;
+      justify-content: center;
+      padding: 2rem 1rem;
+      margin: 0;
+      background: #f4f4f5;
+      color: #18181b;
+    }
+    .calculator {
+      background: #fff;
+      border: 1px solid #d4d4d8;
+      border-radius: 8px;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 22rem;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.875rem; }
+    input, select {
+      width: 100%;
+      padding: 0.5rem;
+      font-size: 1rem;
+      border: 1px solid #a1a1aa;
+      border-radius: 4px;
+    }
+    .operations {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+    button {
+      padding: 0.5rem;
+      font-size: 1rem;
+      border: 1px solid #a1a1aa;
+      border-radius: 4px;
+      background: #fafafa;
+      cursor: pointer;
+    }
+    button:hover { background: #e4e4e7; }
+    button.calculate { grid-column: 1 / -1; background: #18181b; color: #fff; border-color: #18181b; }
+    button.calculate:hover { background: #3f3f46; }
+    #result { margin-top: 1rem; font-size: 1.125rem; font-weight: 600; }
+    #error { margin-top: 0.5rem; font-size: 0.875rem; color: #dc2626; min-height: 1.25rem; }
+  </style>
+</head>
+<body>
+  <main class="calculator">
+    <h1>Calculator</h1>
+    <label for="a">First number</label>
+    <input id="a" type="text" inputmode="decimal" autocomplete="off">
+    <label for="b">Second number</label>
+    <input id="b" type="text" inputmode="decimal" autocomplete="off">
+    <div class="operations">
+      <button type="button" data-op="+">+</button>
+      <button type="button" data-op="-">&minus;</button>
+      <button type="button" data-op="*">&times;</button>
+      <button type="button" data-op="/">/</button>
+      <button type="button" class="calculate" data-op="">=</button>
+    </div>
+    <output id="result" aria-live="polite"></output>
+    <div id="error" role="alert"></div>
+  </main>
+  <script>
+    "use strict";
+
+    function calculate(a, b, operator) {
+      if (typeof a !== "number" || typeof b !== "number" ||
+          !Number.isFinite(a) || !Number.isFinite(b)) {
+        throw new Error("Invalid input: both operands must be finite numbers");
+      }
+      switch (operator) {
+        case "+": return a + b;
+        case "-": return a - b;
+        case "*": return a * b;
+        case "/":
+          if (b === 0) throw new Error("Division by zero is not allowed");
+          return a / b;
+        default:
+          throw new Error("Unsupported operator: " + operator);
+      }
+    }
+
+    function parseInput(value) {
+      if (value.trim() === "") return NaN;
+      return Number(value);
+    }
+
+    var lastOperator = "+";
+
+    function run(op) {
+      var resultEl = document.getElementById("result");
+      var errorEl = document.getElementById("error");
+      errorEl.textContent = "";
+      try {
+        if (op !== "") lastOperator = op;
+        var a = parseInput(document.getElementById("a").value);
+        var b = parseInput(document.getElementById("b").value);
+        var result = calculate(a, b, lastOperator);
+        resultEl.textContent = "= " + result;
+      } catch (err) {
+        resultEl.textContent = "";
+        errorEl.textContent = err.message;
+      }
+    }
+
+    document.querySelectorAll(".operations button").forEach(function (btn) {
+      btn.addEventListener("click", function () { run(btn.dataset.op); });
+    });
+  </script>
+</body>
+</html>
