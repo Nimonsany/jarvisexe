@@ -71,10 +71,7 @@ export class Orchestrator {
 
       // 2. EXECUTION loop with supervision
       const verificationSpec = parseVerificationSpec(planResponse);
-      const dirConstraint = `\n\nCRITICAL CONSTRAINT: Work ONLY inside the project directory: ${task.project_directory}
-Create/modify files there and run all commands with that as the working directory.
-Do NOT modify, delete, or move anything outside that directory (especially not the JARVIS installation itself).`;
-      await this.executeLoop(task, `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}${dirConstraint}`, verificationSpec);
+      await this.executeLoop(task, `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}`, verificationSpec);
       return task;
     } catch (e) {
       task.last_error = String(e);
@@ -92,6 +89,9 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
   private async executeLoop(task: Task, prompt: string, verificationSpec: SoftwareVerificationSpec | null): Promise<void> {
     const supervisor = new Supervisor();
     const dir = this.store.taskDir(task.id);
+    const dirConstraint = `\n\nCRITICAL CONSTRAINT: Work ONLY inside the project directory: ${task.project_directory}
+Create/modify files there and run all commands with that as the working directory.
+Do NOT modify, delete, or move anything outside that directory (especially not the JARVIS installation itself).`;
     let currentPrompt = prompt;
 
     for (;;) {
@@ -107,9 +107,10 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
 
       await this.store.emit(task, 'opencode', 'session_start', 'info', { prompt_len: currentPrompt.length });
       const onEvent = (line: string) => console.log(`  [opencode] ${line.slice(0, 300)}`);
+      const fullPrompt = currentPrompt + dirConstraint; // constraint on EVERY session
       let session = task.opencode_session
-        ? this.opencode.continue(task.opencode_session, task.project_directory, currentPrompt, onEvent)
-        : this.opencode.start(task.project_directory, currentPrompt, onEvent);
+        ? this.opencode.continue(task.opencode_session, task.project_directory, fullPrompt, onEvent)
+        : this.opencode.start(task.project_directory, fullPrompt, onEvent);
       task.opencode_session = session.session_id;
       await this.store.save(task);
 

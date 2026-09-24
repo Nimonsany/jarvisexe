@@ -36,7 +36,9 @@ export class Supervisor {
     // Only the very end of the output reflects the final outcome — earlier
     // lines legitimately mention past errors ("One failure was hit and fixed").
     const tail = lines.slice(-15).join('\n');
-    if (/all .*tests? (pass|passed)|passed,\s*0 failed|\b\d+ passed\b.*\b0 failed\b/i.test(tail)) return false;
+    if (
+      /all .*tests? (pass|passed)|passed,\s*0 failed|\b\d+(?:\/\d+)?\s*(?:tests?\s*)?(pass|passed)\b|\bpass(ed)?\b.*\b0 failed\b/i.test(tail)
+    ) return false;
     return tail.split('\n').some((l) => ERROR_HINTS.test(l));
   }
 
