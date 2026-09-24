@@ -1,0 +1,10 @@
+node_modules/
+dist/
+runtime/tasks/
+runtime/sessions/
+runtime/logs/
+runtime/recovery/
+runtime/browser-profile/
+.env
+*.local
+.DS_Store
