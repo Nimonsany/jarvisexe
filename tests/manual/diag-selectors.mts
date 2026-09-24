@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const ctx = await chromium.launchPersistentContext('runtime/browser-profile', { headless: false, channel: 'chrome' });
+const page = ctx.pages()[0] ?? await ctx.newPage();
+await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForTimeout(10000);
+console.log('URL:', page.url());
+const checks = ['#prompt-textarea', 'div[contenteditable="true"]', 'textarea', '#composer-background', '[data-testid="composer-text-input"]'];
+for (const s of checks) console.log(s, '→', await page.locator(s).count());
+console.log('tail:', (await page.locator('body').innerText()).slice(-400));
+await ctx.close();
+process.exit(0);

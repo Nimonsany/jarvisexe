@@ -3,9 +3,11 @@ import path from 'node:path';
 
 const CHATGPT_URL = 'https://chatgpt.com/';
 // Prompt box: ChatGPT uses a contenteditable div#prompt-textarea (textarea historically).
-const PROMPT_SELECTOR = '#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"]';
+// Logged-in ChatGPT uses div[contenteditable="true"]#prompt-textarea, but the id can vary;
+// contenteditable div is the stable signal. textarea variants kept for older UIs.
+const PROMPT_SELECTOR = 'div[contenteditable="true"], #prompt-textarea, textarea[data-testid="prompt-textarea"]';
 const STOP_SELECTOR = 'button[data-testid="stop-button"], button[aria-label*="Stop"], button:has-text("Stop generating")';
-const ASSISTANT_SELECTOR = '[data-message-author-role="assistant"]';
+const ASSISTANT_SELECTOR = '[data-content-search-unit-key*="assistant"], [data-chatgpt-search-unit-key*="assistant"], [data-message-author-role="assistant"]';
 
 export class ChatGPTBrowser {
   private ctx: BrowserContext | null = null;
@@ -61,11 +63,18 @@ export class ChatGPTBrowser {
 
     const promptBox = page.locator(PROMPT_SELECTOR).first();
     await promptBox.click();
-    // Fill via keyboard-paste for reliability with contenteditable
-    await page.evaluate((text) => navigator.clipboard.writeText(text), prompt).catch(() => {});
-    await promptBox.fill(prompt).catch(async () => {
-      await promptBox.pressSequentially(prompt.slice(0, 2000), { delay: 1 });
-    });
+    // contenteditable: use clipboard paste via CDP-safe evaluate then InsertText,
+    // falling back to sequential typing. fill() doesn't work on contenteditable reliably.
+    try {
+      await promptBox.evaluate((el, text) => {
+        (el as HTMLElement).focus();
+        el.textContent = text;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      }, prompt);
+    } catch {
+      await promptBox.pressSequentially(prompt.slice(0, 4000), { delay: 1 });
+    }
+    await page.waitForTimeout(500);
     await page.keyboard.press('Enter');
 
     // Wait until generation starts then finishes (stop button appears then disappears),

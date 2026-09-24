@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const ctx = await chromium.launchPersistentContext('runtime/browser-profile', { headless: false, channel: 'chrome' });
+const page = ctx.pages()[0] ?? await ctx.newPage();
+await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+console.log('Browser open. Please LOG IN to ChatGPT in this window. Waiting...');
+await page.waitForSelector('#prompt-textarea', { timeout: 0 });
+console.log('LOGIN OK — prompt box detected. You can close this window.');
+await page.waitForTimeout(3000);
+await ctx.close();
+process.exit(0);

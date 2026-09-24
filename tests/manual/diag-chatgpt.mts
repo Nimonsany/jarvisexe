@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const ctx = await chromium.launchPersistentContext('runtime/browser-profile', { headless: false, channel: 'chrome' });
+const page = ctx.pages()[0] ?? await ctx.newPage();
+await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => console.log('NAV FAIL', e.message));
+await page.waitForTimeout(8000);
+console.log('URL:', page.url());
+console.log('TITLE:', await page.title());
+console.log('prompt found:', await page.locator('#prompt-textarea').count());
+const text = await page.locator('body').innerText().catch(() => '');
+console.log('body head:', text.slice(0, 300));
+await ctx.close();

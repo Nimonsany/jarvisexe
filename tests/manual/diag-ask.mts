@@ -1,0 +1,20 @@
+import { chromium } from 'playwright';
+const ctx = await chromium.launchPersistentContext('runtime/browser-profile', { headless: false, channel: 'chrome' });
+const page = ctx.pages()[0] ?? await ctx.newPage();
+await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+const box = page.locator('div[contenteditable="true"]').first();
+await box.click();
+await box.evaluate((el, t) => {
+  (el as HTMLElement).focus();
+  el.textContent = t;
+  el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: t }));
+}, 'Reply with exactly this: JARVIS_DIAG_OK');
+await page.keyboard.press('Enter');
+await page.waitForTimeout(25000);
+console.log('assistant-role:', await page.locator('[data-message-author-role="assistant"]').count());
+console.log('agent-turn:', await page.locator('.agent-turn').count());
+console.log('conversation-turn:', await page.locator('[data-testid^="conversation-turn"]').count());
+console.log('markdown:', await page.locator('.markdown').count());
+console.log('contains DIAG_OK:', (await page.locator('body').innerText()).includes('JARVIS_DIAG_OK'));
+await ctx.close();
+process.exit(0);

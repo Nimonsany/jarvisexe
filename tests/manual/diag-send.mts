@@ -1,0 +1,18 @@
+import { chromium } from 'playwright';
+const ctx = await chromium.launchPersistentContext('runtime/browser-profile', { headless: false, channel: 'chrome' });
+const page = ctx.pages()[0] ?? await ctx.newPage();
+await page.goto('https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForSelector('#prompt-textarea', { timeout: 60000 });
+const box = page.locator('#prompt-textarea').first();
+console.log('box tag:', await box.evaluate((el) => el.tagName));
+await box.click();
+await page.keyboard.type('Reply with exactly: JARVIS_DIAG_OK', { delay: 5 });
+await page.keyboard.press('Enter');
+await page.waitForTimeout(20000);
+console.log('URL:', page.url());
+console.log('assistant count:', await page.locator('[data-message-author-role="assistant"]').count());
+console.log('assistant roles count:', await page.locator('[data-testid^="conversation-turn"]').count());
+const agents = await page.locator('.agent-turn, [data-message-author-role="assistant"]').count();
+console.log('agents:', agents);
+console.log('body tail:', (await page.locator('body').innerText()).slice(-600));
+await ctx.close();
