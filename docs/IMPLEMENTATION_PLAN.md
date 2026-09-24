@@ -17,7 +17,7 @@ Delivered as a TypeScript CLI: `npm run jarvis -- "Create a simple calculator we
 | 9 | Orchestrator (wires everything, state machine driver) | `packages/core/src/orchestrator.ts` | DONE |
 | 10 | CLI entry point | `packages/core/src/cli.ts` | DONE |
 | 11 | Unit tests (state machine, parser, sanitizer, supervisor) | `tests/*.test.ts` | DONE |
-| 12 | E2E acceptance demo ("calculator web app") | manual run against live ChatGPT | OWNER-AUTHORIZED RUN |
+| 12 | E2E acceptance demo ("calculator web app") | manual run against live ChatGPT | **PASS — TASK-000006** |
 
 ## Milestone 2+ — not started
 
