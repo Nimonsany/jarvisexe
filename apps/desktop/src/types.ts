@@ -79,10 +79,10 @@ export const PIPELINE: TaskStatus[] = ['PLANNING', 'EXECUTING', 'TESTING', 'VERI
 
 export function pipelineMark(task: Task | null, step: TaskStatus): 'done' | 'active' | 'pending' | 'bad' {
   if (!task) return 'pending';
+  if (task.status === 'FAILED' || task.status === 'CANCELLED') return 'bad';
   const order: TaskStatus[] = ['PLANNING', 'WAITING_FOR_CHATGPT', 'PLAN_RECEIVED', 'PREPARING_EXECUTION', 'EXECUTING', 'MONITORING', 'TESTING', 'VERIFYING', 'COMPLETED'];
   const cur = order.indexOf(task.status === 'DEBUGGING' ? 'EXECUTING' : task.status);
   const idx = order.indexOf(step);
-  if (task.status === 'FAILED' || task.status === 'CANCELLED') return idx <= cur ? 'bad' : 'pending';
   if (cur > idx) return 'done';
   if (cur === idx) return 'active';
   return 'pending';
