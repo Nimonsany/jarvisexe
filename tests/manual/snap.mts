@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const p = await (await chromium.launch({ headless: true, channel: 'chrome' })).newPage();
+p.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE ERR:', m.text().slice(0, 150)); });
+await p.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
+await p.waitForTimeout(2000);
+await p.click('.sidebar button:has-text("Tasks")');
+await p.waitForTimeout(3000);
+console.log('rows:', await p.locator('.task-table tr').count());
+console.log('body:', (await p.locator('body').innerText()).slice(0, 400));
+await p.context().close();
+process.exit(0);

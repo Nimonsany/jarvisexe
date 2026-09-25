@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calculator</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    background: #1e1e2e;
+  }
+  .calc {
+    background: #313244;
+    padding: 16px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  }
+  #display {
+    width: 100%;
+    height: 56px;
+    margin-bottom: 12px;
+    padding: 0 12px;
+    border: none;
+    border-radius: 8px;
+    background: #11111b;
+    color: #cdd6f4;
+    font-size: 24px;
+    text-align: right;
+  }
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  button {
+    height: 52px;
+    border: none;
+    border-radius: 8px;
+    background: #45475a;
+    color: #cdd6f4;
+    font-size: 18px;
+    cursor: pointer;
+  }
+  button:hover { background: #585b70; }
+  button:active { background: #6c7086; }
+  .op { background: #585b70; color: #89b4fa; }
+  .eq { background: #89b4fa; color: #11111b; grid-column: span 2; }
+</style>
+</head>
+<body>
+<div class="calc">
+  <input id="display" type="text" readonly value="0" aria-label="Calculator display">
+  <div class="keys">
+    <button data-key="C">C</button>
+    <button data-key="±">±</button>
+    <button data-key="%">%</button>
+    <button class="op" data-key="/">÷</button>
+    <button data-key="7">7</button>
+    <button data-key="8">8</button>
+    <button data-key="9">9</button>
+    <button class="op" data-key="*">×</button>
+    <button data-key="4">4</button>
+    <button data-key="5">5</button>
+    <button data-key="6">6</button>
+    <button class="op" data-key="-">−</button>
+    <button data-key="1">1</button>
+    <button data-key="2">2</button>
+    <button data-key="3">3</button>
+    <button class="op" data-key="+">+</button>
+    <button data-key="0" style="grid-column: span 2">0</button>
+    <button data-key=".">.</button>
+    <button class="eq" data-key="=">=</button>
+  </div>
+</div>
+
+<script>
+function calculate(a, op, b) {
+  a = Number(a);
+  b = Number(b);
+  if (Number.isNaN(a) || Number.isNaN(b)) return "Error";
+  if (op === "+") return a + b;
+  if (op === "-") return a - b;
+  if (op === "*") return a * b;
+  if (op === "/") {
+    if (b === 0) return "Error";
+    return a / b;
+  }
+  if (op === "%") return b === 0 ? "Error" : a % b;
+  return "Error";
+}
+
+(function () {
+  var display = document.getElementById("display");
+  var a = null;
+  var op = null;
+  var fresh = true;
+
+  function show(v) {
+    display.value = String(v);
+  }
+
+  function digit(d) {
+    if (fresh || display.value === "0") {
+      show(d === "." ? "0." : d);
+      fresh = false;
+      return;
+    }
+    if (d === "." && display.value.indexOf(".") !== -1) return;
+    show(display.value + d);
+  }
+
+  function setOperator(nextOp) {
+    if (op !== null && !fresh) {
+      var r = calculate(a, op, display.value);
+      show(r);
+      a = r === "Error" ? null : r;
+    } else {
+      a = Number(display.value);
+    }
+    op = nextOp;
+    fresh = true;
+  }
+
+  function equals() {
+    if (op === null) return;
+    var r = calculate(a, op, display.value);
+    show(r);
+    a = null;
+    op = null;
+    fresh = true;
+  }
+
+  function press(key) {
+    if (key >= "0" && key <= "9") return digit(key);
+    if (key === ".") return digit(".");
+    if (key === "C") {
+      a = null;
+      op = null;
+      fresh = true;
+      return show("0");
+    }
+    if (key === "±") return show(-Number(display.value));
+    if (key === "=") return equals();
+    if (key === "+" || key === "-" || key === "*" || key === "/" || key === "%") return setOperator(key);
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("button[data-key]"), function (btn) {
+    btn.addEventListener("click", function () {
+      press(btn.getAttribute("data-key"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if ((e.key >= "0" && e.key <= "9") || e.key === "." || e.key === "+" || e.key === "-" || e.key === "*" || e.key === "/") {
+      e.preventDefault();
+      press(e.key);
+    } else if (e.key === "Enter" || e.key === "=") {
+      e.preventDefault();
+      press("=");
+    } else if (e.key === "Escape") {
+      press("C");
+    } else if (e.key === "%") {
+      press("%");
+    }
+  });
+})();
+</script>
+</body>
+</html>

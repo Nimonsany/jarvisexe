@@ -40,6 +40,8 @@ export class Orchestrator {
   private verifier = new Verifier();
   private activeSession: import('./opencode/controller.js').OpenCodeSession | null = null;
   private running = false;
+  private cancelRequested = false;
+  private pauseRequested = false;
 
   constructor(private opts: OrchestratorOptions) {
     this.store = new TaskStore(opts.runtimeDir);
@@ -68,6 +70,8 @@ export class Orchestrator {
     if (this.running) throw new Error('Another task is already running');
     const task = await this.store.load(taskId);
     if (task.status !== 'PAUSED' && task.status !== 'WAITING_FOR_OWNER') return task;
+    this.pauseRequested = false;
+    this.cancelRequested = false;
     // re-parse the verification spec from the stored plan if available
     let spec: SoftwareVerificationSpec | null = null;
     try {
@@ -80,10 +84,13 @@ export class Orchestrator {
     return task;
   }
 
-  /** STOP/CANCEL: kill controlled child work now, persist state, record in logs. */
+  /** STOP/CANCEL: kill controlled child work now, persist state, record in logs.
+   *  The loop honours the flag at its next checkpoint (child ops that cannot be
+   *  interrupted mid-command finish, then the task cancels). */
   async cancel(taskId: string): Promise<Task> {
     const task = await this.store.load(taskId);
     if (task.status === 'COMPLETED' || task.status === 'CANCELLED') return task;
+    this.cancelRequested = true;
     if (this.activeSession) {
       this.opencode.stop(this.activeSession);
       this.activeSession = null;
@@ -104,6 +111,8 @@ export class Orchestrator {
 
   async run(ownerRequest: string, projectDir: string): Promise<Task> {
     if (!(await this.opencode.detect())) throw new Error('OpenCode CLI not found on PATH');
+    this.cancelRequested = false; // fresh run: don't inherit a stale stop request
+    this.pauseRequested = false;
     const task = await this.store.create(ownerRequest, projectDir);
     try {
       await this.chatgpt.launch();
@@ -150,7 +159,17 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
     let currentPrompt = prompt;
 
     for (;;) {
-      if (task.status === 'PAUSED' || task.status === 'CANCELLED') return;
+      // honour stop/pause requested while a child op was in flight
+      if (this.cancelRequested) {
+        await this.store.transition(task, 'CANCELLED').catch(() => {});
+        await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+        return;
+      }
+      if (this.pauseRequested || task.status === 'PAUSED' || task.status === 'CANCELLED') {
+        if (task.status !== 'PAUSED') await this.store.transition(task, 'PAUSED').catch(() => {});
+        await this.store.emit(task, 'core', 'paused_at_checkpoint', 'warning');
+        return;
+      }
       if (task.status !== 'EXECUTING') {
         if (task.status === 'DEBUGGING') await this.store.transition(task, 'EXECUTING');
         else if (task.status !== 'PLAN_RECEIVED' && task.status !== 'PLANNING') { /* no-op */ }
@@ -172,6 +191,21 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
 
       const exitCode = await session.done;
       this.activeSession = null;
+
+      // stop/pause may have been requested while the child ran — cancel now,
+      // do NOT let the loop continue and overwrite the cancellation.
+      if (this.cancelRequested) {
+        await this.store.emit(task, 'opencode', 'session_exit', 'warning', { exitCode, cancelled: true });
+        await this.store.transition(task, 'CANCELLED').catch(() => {});
+        await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+        return;
+      }
+      if (this.pauseRequested) {
+        await this.store.emit(task, 'opencode', 'session_exit', 'warning', { exitCode, paused: true });
+        await this.store.transition(task, 'PAUSED').catch(() => {});
+        await this.store.emit(task, 'core', 'paused_at_checkpoint', 'warning');
+        return;
+      }
       await this.store.emit(task, 'opencode', 'session_exit', exitCode === 0 ? 'info' : 'warning', { exitCode });
       await writeFile(path.join(dir, `opencode-run-${Date.now()}.log`), sanitize(session.output.join('\n')));
 
