@@ -1,14 +1,16 @@
 import http from 'node:http';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { TaskStore } from './task/store.js';
 import type { Task, TaskEvent } from './task/types.js';
 import { sanitize } from './security/sanitize.js';
 import { ChatGPTBrowser, defaultProfileDir } from './browser/chatgpt.js';
 import type { Orchestrator } from './orchestrator.js';
+import { ComputerController } from './computer/index.js';
 
 export interface JarvisSettings {
   defaultProjectDir: string;
@@ -50,6 +52,12 @@ export class JarvisServer {
   private loginWatcher: ChatGPTBrowser | null = null;
   private loginState: Health['chatgptLogin'] = 'unknown';
   private busy = false;
+  /** Per-install random token; state-changing requests must present it. */
+  private token: string;
+  /** Strict origin allowlist — the JARVIS UI only. Enforced server-side, not just via CORS headers. */
+  private allowedOrigins = new Set(['http://localhost:5173', 'http://127.0.0.1:5173', 'tauri://localhost', 'http://tauri.localhost']);
+  private healthCache: { data: Health; at: number } | null = null;
+  readonly computer: ComputerController;
 
   constructor(private runtimeDir: string, private orchestrator: Orchestrator, settings?: Partial<JarvisSettings>) {
     this.store = orchestrator.taskStore;
@@ -58,7 +66,16 @@ export class JarvisServer {
     // apply operational settings the core uses
     process.env.OPENCODE_BIN = this.settings.opencodeBin;
     process.env.JARVIS_BROWSER_CHANNEL = this.settings.browserChannel;
-    this.store.bus.on('event', () => { /* SSE clients read via /api/events */ });
+    // per-install auth token (persisted, never logged)
+    const tokenFile = path.join(runtimeDir, 'auth-token');
+    if (existsSync(tokenFile)) {
+      this.token = '';
+      void readFile(tokenFile, 'utf8').then((t) => { this.token = t.trim(); });
+    } else {
+      this.token = randomUUID() + randomUUID().slice(0, 8);
+      writeFileSync(tokenFile, this.token, { mode: 0o600 });
+    }
+    this.computer = new ComputerController(this.store, runtimeDir);
   }
 
   private settingsPath() { return path.join(this.runtimeDir, 'settings.json'); }
@@ -84,16 +101,30 @@ export class JarvisServer {
     return next;
   }
 
+  /** Lightweight health: cached component states, never blocks. Expensive probes
+   *  (opencode spawn etc.) refresh the cache in the background. */
   async health(): Promise<Health> {
-    const opencode = await this.orchestrator.taskStore && existsSync('/dev/null')
-      ? await this.checkOpencode() : 'missing';
-    return {
+    const cached = this.healthCache;
+    if (cached && Date.now() - cached.at < 10_000) return cached.data;
+    if (cached) {
+      // stale — return it now, refresh in background (non-blocking)
+      void this.refreshHealth();
+      return cached.data;
+    }
+    const data = await this.refreshHealth();
+    return data;
+  }
+
+  private async refreshHealth(): Promise<Health> {
+    const data: Health = {
       core: 'online',
-      opencode,
+      opencode: await this.checkOpencode(),
       chatgptProfile: existsSync(defaultProfileDir(this.runtimeDir)) ? 'ready' : 'missing',
       chatgptLogin: this.loginState,
       storage: existsSync(this.runtimeDir) ? 'ready' : 'error',
     };
+    this.healthCache = { data, at: Date.now() };
+    return data;
   }
 
   private checkOpencode(): Promise<Health['opencode']> {
@@ -166,10 +197,13 @@ export class JarvisServer {
   }
 
   private async handleAsync(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const origin = req.headers.origin ?? '';
+    const allowed = origin === '' || this.allowedOrigins.has(origin);
     const cors = {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': allowed ? origin : '',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Jarvis-Token',
+      Vary: 'Origin',
     };
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); res.end(); return; }
 
@@ -179,6 +213,20 @@ export class JarvisServer {
       res.writeHead(status, { 'Content-Type': 'application/json', ...cors });
       res.end(JSON.stringify(data));
     };
+
+    // SECURITY: foreign origins (e.g. a random website in Chrome) are rejected outright.
+    if (!allowed) return void json({ error: 'origin not allowed' }, 403);
+
+    // SECURITY: bootstrap is the ONLY way an allowed origin obtains the token.
+    // State-changing requests (POST, SSE) must then present it.
+    const isSSE = req.method === 'GET' && p === '/api/events';
+    const isPost = req.method === 'POST';
+    const needsToken = isSSE || isPost;
+    const presented = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? String(req.headers['x-jarvis-token'] ?? '') ?? '';
+    const sseToken = isSSE ? (url.searchParams.get('token') ?? '') : '';
+    const tokenOk = presented === this.token || (isSSE && sseToken === this.token && sseToken !== '');
+    if (needsToken && !tokenOk) return void json({ error: 'unauthenticated' }, 401);
+
     let body: Record<string, unknown> = {};
     try {
       if (req.method === 'POST') {
@@ -187,6 +235,7 @@ export class JarvisServer {
         body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
       }
 
+      if (req.method === 'GET' && p === '/api/bootstrap') return void json({ token: this.token });
       if (req.method === 'GET' && p === '/api/health') return void json(await this.health());
       if (req.method === 'GET' && p === '/api/tasks') return void json(await this.store.listAll());
       if (req.method === 'GET' && p === '/api/settings') return void json(await this.getSettings());
@@ -213,13 +262,30 @@ export class JarvisServer {
       }
 
       if (req.method === 'GET' && p === '/api/events') {
-        // SSE: live task events
+        // SSE: live task events. Auth via ?token= (EventSource cannot send headers —
+        // documented practical exception; the token never appears in logs).
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', ...cors });
         res.flushHeaders(); // send headers immediately so fetch()/EventSource resolve
         const onEvent = (e: TaskEvent) => { try { res.write(`data: ${JSON.stringify(this.sanitizeEvent(e))}\n\n`); } catch { /* client gone */ } };
         this.store.bus.on('event', onEvent);
         req.on('close', () => this.store.bus.off('event', onEvent));
         return;
+      }
+
+      // Computer control: policy-gated actions (task-scoped or owner-direct)
+      const compMatch = p.match(/^\/api\/(?:task\/([^/]+)\/)?computer$/);
+      if (compMatch && req.method === 'POST') {
+        const taskId = compMatch[1];
+        try {
+          const result = await this.computer.execute(body as unknown as import('./computer/types.js').ComputerActionInput, taskId);
+          return void json(result);
+        } catch (e) {
+          return void json({ success: false, error: String(e instanceof Error ? e.message : e) }, 400);
+        }
+      }
+      if (compMatch && req.method === 'GET') {
+        const taskId = compMatch[1];
+        return void json(this.computer.history(taskId));
       }
 
       json({ error: 'not found' }, 404);
