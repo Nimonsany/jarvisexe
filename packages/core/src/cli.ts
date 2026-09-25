@@ -12,10 +12,29 @@ async function main() {
 
   if (!command || command === '--help') {
     console.log(`Usage:
-  jarvis "<owner request>" [project-dir]   run a task end-to-end
+  jarvis "<owner request>" [project-dir]   run a task end-to-end (foreground)
+  jarvis serve                             start local API server (127.0.0.1:7788) for the desktop UI
   jarvis --resume                          list incomplete tasks
   jarvis --status TASK-ID                  show task status`);
     process.exit(0);
+  }
+
+  if (command === 'serve') {
+    const { Orchestrator } = await import('./orchestrator.js');
+    const { JarvisServer } = await import('./server.js');
+    const plannerPromptTemplate = await readFile(resolve(repoRoot, 'prompts/chatgpt-planner.md'), 'utf8');
+    const opencodeRules = await readFile(resolve(repoRoot, 'prompts/opencode-master.md'), 'utf8');
+    const orchestrator = new Orchestrator({
+      runtimeDir,
+      plannerPromptTemplate,
+      opencodeRules,
+      headless: process.env.JARVIS_HEADLESS === 'true',
+    });
+    const server = new JarvisServer(runtimeDir, orchestrator);
+    await server.listen(7788, '127.0.0.1');
+    console.log('JARVIS core API listening on http://127.0.0.1:7788');
+    console.log('Press Ctrl+C to stop.');
+    return;
   }
 
   const store = new TaskStore(runtimeDir);

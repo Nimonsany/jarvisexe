@@ -1,0 +1,10 @@
+import { JarvisServer } from '../../packages/core/src/server.js';
+import { TaskStore } from '../../packages/core/src/task/store.js';
+const store = new TaskStore('/tmp/jarvis-repro');
+const fake = { taskStore: store, run: async () => { throw new Error('x'); }, pause: async (i: string) => store.load(i), resume: async (i: string) => store.load(i), cancel: async (i: string) => store.load(i) };
+const s = new JarvisServer('/tmp/jarvis-repro', fake as never);
+await s.listen(7790, '127.0.0.1');
+const bad = await fetch('http://127.0.0.1:7790/api/settings', { method: 'POST', body: JSON.stringify({ defaultProjectDir: '/nonexistent' }), headers: { 'Content-Type': 'application/json' } });
+console.log('bad status:', bad.status);
+await s.close();
+process.exit(0);

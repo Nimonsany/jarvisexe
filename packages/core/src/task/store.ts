@@ -2,10 +2,13 @@ import { mkdirSync} from 'node:fs';
 import { readFile, writeFile, appendFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import type { Task, TaskEvent, TaskStatus } from './types.js';
 import { assertTransition } from './types.js';
 
 export class TaskStore {
+  /** Global event bus: UI/server subscribe here for live activity. */
+  readonly bus = new EventEmitter();
   constructor(private runtimeDir: string) {
     mkdirSync(path.join(runtimeDir, 'tasks'), { recursive: true });
   }
@@ -63,8 +66,28 @@ export class TaskStore {
   async emit(task: Task, component: string, event: string, severity: TaskEvent['severity'], data?: Record<string, unknown>): Promise<void> {
     const e: TaskEvent = { timestamp: new Date().toISOString(), task_id: task.id, component, event, severity, ...(data ? { data } : {}) };
     await appendFile(path.join(this.dir(task.id), 'events.jsonl'), JSON.stringify(e) + '\n');
+    this.bus.emit('event', e);
     const line = `[${e.timestamp.slice(11, 19)}] [${component}] ${event}`;
     console.log(severity === 'error' ? `\x1b[31m${line}\x1b[0m` : line);
+  }
+
+  /** All tasks on disk, newest first. */
+  async listAll(): Promise<Task[]> {
+    const dir = path.join(this.runtimeDir, 'tasks');
+    if (!existsSync(dir)) return [];
+    const out: Task[] = [];
+    for (const name of await readdir(dir)) {
+      try { out.push(await this.load(name)); } catch { /* skip corrupt */ }
+    }
+    return out.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  /** Sanitized events for UI display. */
+  async events(taskId: string): Promise<TaskEvent[]> {
+    try {
+      const raw = await readFile(path.join(this.dir(taskId), 'events.jsonl'), 'utf8');
+      return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as TaskEvent);
+    } catch { return []; }
   }
 
   async load(taskId: string): Promise<Task> {
