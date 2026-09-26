@@ -32,6 +32,15 @@ export class ChatGPTBrowser {
     this.page = null;
   }
 
+  /** STOP/cancel: abort any in-flight automation. The in-flight ask() throws
+   *  immediately (no retry) so callers can bail out fast. */
+  async abort(): Promise<void> {
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.page = null;
+    try { await ctx?.close(); } catch { /* already closed */ }
+  }
+
   /** Returns true once logged in; waits for the owner to sign in manually if needed. */
   async ensureLoggedIn(onWait: (msg: string) => void = console.log): Promise<void> {
     if (!this.page) throw new Error('browser not launched');
@@ -60,8 +69,11 @@ export class ChatGPTBrowser {
       try {
         return await this.askOnce(prompt, timeoutMs);
       } catch (e) {
+        // abort/closure is not retryable — bail immediately (STOP semantics)
+        const msg = String(e);
+        if (msg.includes('Target closed') || msg.includes('browser has been closed') || msg.includes('Session closed')) throw e;
         if (attempt === 2) throw e;
-        console.log(`  [chatgpt] ask attempt ${attempt} failed (${String(e).slice(0, 120)}), retrying once...`);
+        console.log(`  [chatgpt] ask attempt ${attempt} failed (${msg.slice(0, 120)}), retrying once...`);
       }
     }
     throw new Error('unreachable');

@@ -23,11 +23,14 @@ const act = async (taskId: string, capability: string, operation: string, args: 
 const t = (await (await api('/api/task', 'POST', { request: `M3 computer control E2E (${Date.now()})` })).json()) as { id: string };
 if (!t.id) { console.error('✖ task creation failed — is the orchestrator busy?'); process.exit(1); }
 console.log('task:', t.id);
+// task-scoped policy: filesystem ops must stay inside the task's project dir
+const detail0 = (await (await api(`/api/task/${t.id}`)).json()) as { task: { project_directory: string } };
+const scope = detail0.task.project_directory;
+console.log('project scope:', scope);
 
 // ---------- E2E A: filesystem ----------
 console.log('--- E2E A: filesystem task ---');
-const tmp = path.join('/tmp', `jarvis-m3-e2e-${Date.now()}`);
-const folder = path.join(tmp, 'jarvis-control-test');
+const folder = path.join(scope, 'jarvis-control-test');
 const mk = await act(t.id, 'filesystem', 'mkdir', { path: folder });
 if (mk.success) ok(`A: folder created (${folder})`); else fail(`A: mkdir: ${mk.error}`);
 const wr = await act(t.id, 'filesystem', 'write', { path: path.join(folder, 'hello.txt'), content: 'JARVIS_CONTROL_OK' });
@@ -54,7 +57,7 @@ ok('B: Calculator closed gracefully');
 
 // ---------- E2E C: node script ----------
 console.log('--- E2E C: node script ---');
-const scriptPath = path.join(tmp, 'print-ok.mjs');
+const scriptPath = path.join(scope, 'print-ok.mjs');
 const w2 = await act(t.id, 'filesystem', 'write', { path: scriptPath, content: "console.log('JARVIS_TEST_OK');\n" });
 if (w2.success) ok('C: script written via FilesystemController'); else fail(`C: write: ${w2.error}`);
 const run = await act(t.id, 'terminal', 'run', { command: `node ${scriptPath}` });

@@ -96,6 +96,7 @@ export class Orchestrator {
       this.activeSession = null;
       await this.store.emit(task, 'core', 'opencode_killed', 'warning');
     }
+    await this.chatgpt.abort();
     await this.store.transition(task, 'CANCELLED').catch(async () => { await this.store.save(task); });
     await this.store.emit(task, 'core', 'task_cancelled', 'warning');
     return task;
