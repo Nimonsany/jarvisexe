@@ -115,7 +115,9 @@ console.log('--- E2E F: PAUSE ---');
 // ---------- E2E E: STOP with a long-running child (same task, cancel last) ----------
 console.log('--- E2E E: STOP ---');
 {
-  await act(t.id, 'terminal', 'run', { command: 'sleep 300', timeoutMs: 360000 });
+  const bg = await act(t.id, 'terminal', 'run', { command: 'sleep 300', background: true });
+  if (bg.success && (bg as { metadata?: { osPid?: number } }).metadata?.osPid) ok('E: long-running child started in background (tracked PID)');
+  else fail(`E: background start failed: ${bg.error}`);
   await sleep(1000);
   await api(`/api/task/${t.id}/cancel`, 'POST');
   await sleep(2000);
