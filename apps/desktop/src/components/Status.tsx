@@ -54,24 +54,52 @@ export function humanEvent(e: import('../types').TaskEvent): string {
     consulting_chatgpt_for_debug: 'Consulting ChatGPT for a corrective plan',
     pause_requested: 'Paused',
     task_resumed: 'Resumed',
+    paused_at_checkpoint: 'Paused at safe checkpoint',
     task_cancelled: 'Cancelled',
     opencode_killed: 'OpenCode stopped',
+    computer_processes_killed: 'Controlled processes stopped',
     task_completed: 'Task completed',
     task_failed: 'Task failed',
     escalated_to_owner: 'Waiting for owner decision',
+    'computer.action.denied': 'Action refused by security policy',
+    'computer.action.dry_run': 'Dry run (no changes)',
   };
   if (map[e.event]) {
-    const d = e.data as { attempt?: number; cycle?: number } | undefined;
+    const d = e.data as { attempt?: number; cycle?: number; killed?: number } | undefined;
     if (e.event === 'self_repair_attempt' && d?.attempt) return `${map[e.event]} ${d.attempt}/2`;
     if (e.event === 'consulting_chatgpt_for_debug' && d?.cycle) return `${map[e.event]} (cycle ${d.cycle})`;
+    if (e.event === 'computer_processes_killed' && d?.killed) return `${map[e.event]} (${d.killed})`;
     return map[e.event];
   }
+  // computer control actions: computer.<capability>.<operation>.started/completed
+  const cm = e.event.match(/^computer\.(\w+)\.(\w+)\.(started|completed)$/);
+  if (cm) {
+    const capLabel: Record<string, string> = { terminal: 'Terminal', filesystem: 'Filesystem', applications: 'Application', clipboard: 'Clipboard', screen: 'Screen', keyboard: 'Keyboard', mouse: 'Mouse' };
+    const opLabel: Record<string, string> = { run: 'Running command', mkdir: 'Created folder', write: 'Wrote file', read: 'Read file', launch: 'Opened app', detect: 'Checked app', capture: 'Captured screen' };
+    const verb = cm[3] === 'started' ? (opLabel[cm[2]] ?? cm[2]) : `${opLabel[cm[2]] ?? cm[2]} — done`;
+    return `${capLabel[cm[1]] ?? cm[1]}: ${verb}`;
+  }
   if (e.event.startsWith('state_')) {
-    const [, from, , to] = e.event.split('_');
-    void from;
     const parts = e.event.split('_to_');
     const toState = (parts[1] ?? '').toUpperCase();
     return STATUS_DISPLAY[toState as TaskStatus]?.label ?? e.event;
   }
   return e.event;
+}
+
+/** Computer Activity: capability-grouped computer-control events for the dashboard. */
+export function ComputerActivity({ events, limit = 12 }: { events: import('../types').TaskEvent[]; limit?: number }) {
+  const shown = events.filter((e) => e.component === 'computer').slice(-limit).reverse();
+  if (!shown.length) return <p className="muted">No computer activity yet.</p>;
+  return (
+    <ul className="activity" aria-label="Computer activity">
+      {shown.map((e, i) => (
+        <li key={i} className={`sev-${e.severity}`}>
+          <span className="ts">{e.timestamp.slice(11, 19)}</span>
+          <span className="comp">Computer</span>
+          <span className="ev">{humanEvent(e)}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }

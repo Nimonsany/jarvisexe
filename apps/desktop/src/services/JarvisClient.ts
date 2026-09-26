@@ -1,14 +1,27 @@
 import type { Task, TaskEvent, Health, Settings, ProjectInfo } from '../types';
 
 const BASE = 'http://127.0.0.1:7788';
+let authToken: string | null = null;
+
+/** Fetch the per-install token from the bootstrap endpoint (allowed origins only).
+ *  The token is never logged and never placed in URLs (except SSE, see below). */
+async function ensureToken(): Promise<string> {
+  if (authToken) return authToken;
+  const r = await fetch(`${BASE}/api/bootstrap`);
+  if (!r.ok) throw new Error('bootstrap failed');
+  authToken = ((await r.json()) as { token: string }).token;
+  return authToken;
+}
 
 async function req<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const token = await ensureToken();
   const r = await fetch(`${BASE}${path}`, {
     method,
     body: body ? JSON.stringify(body) : undefined,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
   });
   if (!r.ok) {
+    if (r.status === 401) authToken = null; // token rotated — refetch next call
     const err = await r.json().catch(() => ({ error: r.statusText }));
     throw new Error((err as { error: string }).error);
   }
@@ -16,7 +29,8 @@ async function req<T>(path: string, method = 'GET', body?: unknown): Promise<T> 
 }
 
 /** The only bridge between the UI and JARVIS Core. The UI never knows
- *  about Playwright, ChatGPT DOM selectors, OpenCode CLI or subprocesses. */
+ *  about Playwright, ChatGPT DOM selectors, OpenCode CLI, subprocesses,
+ *  or computer-controller internals. */
 export const JarvisClient = {
   createTask: (request: string, project?: string) => req<Task>('/api/task', 'POST', { request, project }),
   getTask: (id: string) => req<{ task: Task; events: TaskEvent[] }>(`/api/task/${id}`),
@@ -31,12 +45,18 @@ export const JarvisClient = {
   openChatGPTLogin: () => req<{ ok: boolean }>('/api/chatgpt/login', 'POST'),
   health: () => req<Health>('/api/health'),
 
-  /** Subscribe to live task events (SSE). Returns unsubscribe. */
+  /** Subscribe to live task events (SSE). Auth via ?token= — EventSource cannot
+   *  send headers; documented practical exception, token never logged. */
   subscribeToEvents(onEvent: (e: TaskEvent) => void): () => void {
-    const es = new EventSource(`${BASE}/api/events`);
-    es.onmessage = (m) => {
-      try { onEvent(JSON.parse(m.data) as TaskEvent); } catch { /* malformed event */ }
-    };
-    return () => es.close();
+    let es: EventSource | null = null;
+    let closed = false;
+    void ensureToken().then((token) => {
+      if (closed) return;
+      es = new EventSource(`${BASE}/api/events?token=${token}`);
+      es.onmessage = (m) => {
+        try { onEvent(JSON.parse(m.data) as TaskEvent); } catch { /* malformed event */ }
+      };
+    });
+    return () => { closed = true; es?.close(); };
   },
 };

@@ -65,13 +65,19 @@ export class Orchestrator {
     return task;
   }
 
-  /** RESUME: continue safely from persisted task state. */
+  /** RESUME: continue safely from persisted task state.
+   *  In-flight loop (paused at a checkpoint): clear flags + set disk EXECUTING —
+   *  the loop continues at its next checkpoint. Loop not in-flight: re-enter. */
   async resume(taskId: string): Promise<Task> {
-    if (this.running) throw new Error('Another task is already running');
     const task = await this.store.load(taskId);
     if (task.status !== 'PAUSED' && task.status !== 'WAITING_FOR_OWNER') return task;
     this.pauseRequested = false;
     this.cancelRequested = false;
+    if (this.running) {
+      await this.store.transition(task, 'EXECUTING').catch(() => {});
+      await this.store.emit(task, 'core', 'task_resumed', 'info');
+      return task;
+    }
     // re-parse the verification spec from the stored plan if available
     let spec: SoftwareVerificationSpec | null = null;
     try {
@@ -165,6 +171,19 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
         await this.store.transition(task, 'CANCELLED').catch(() => {});
         await this.store.emit(task, 'core', 'task_cancelled', 'warning');
         return;
+      }
+      // consult authoritative disk state (pause/cancel may have arrived mid-ask)
+      const disk = await this.store.load(task.id).catch(() => null);
+      if (disk?.status === 'CANCELLED') {
+        await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+        return;
+      }
+      if (disk?.status === 'PAUSED' && !this.pauseRequested) {
+        // paused via API while this loop was awaiting something — wait for resume;
+        // resume() flips disk to EXECUTING, detected on the next iteration
+        await this.store.emit(task, 'core', 'paused_at_checkpoint', 'warning');
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
       }
       if (this.pauseRequested || task.status === 'PAUSED' || task.status === 'CANCELLED') {
         if (task.status !== 'PAUSED') await this.store.transition(task, 'PAUSED').catch(() => {});

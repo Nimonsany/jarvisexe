@@ -1,5 +1,5 @@
 import { TaskInput, CurrentTaskPanel, ErrorBanner, HealthBar } from '../components/Panels';
-import { Pipeline, ActivityList } from '../components/Status';
+import { Pipeline, ActivityList, ComputerActivity } from '../components/Status';
 import type { useJarvis } from '../hooks/useJarvis';
 
 export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
@@ -15,6 +15,9 @@ export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
       <Pipeline task={j.currentTask} />
       <CurrentTaskPanel task={j.currentTask} onPause={(id) => j.pause(id)} onStop={(id) => j.stop(id)} onOpenTask={j.openTask} />
       <ErrorBanner task={j.currentTask} />
+
+      <h2>Computer Activity</h2>
+      <ComputerActivity events={j.events} />
 
       <h2>Activity</h2>
       <ActivityList events={j.events} />

@@ -55,3 +55,40 @@ Computer control, voice, dashboard remote access, MCP plugins, packaging.
 One owner command → ChatGPT planning via browser → OpenCode execution →
 automatic correction loop on failure → independent verification → COMPLETED.
 No copy/paste. No OpenAI API.
+
+## Milestone 3 — Computer Control (DONE)
+
+Computer control as another TOOL PROVIDER under the same orchestration model.
+
+| # | Component | Where | Status |
+|---|-----------|-------|--------|
+| 1 | ComputerController + adapters (terminal/filesystem/applications/clipboard/screen/keyboard/mouse) | `packages/core/src/computer/` | DONE |
+| 2 | SecurityPolicy v1 (READ/SAFE_WRITE/EXECUTE/UI_AUTOMATION/DESTRUCTIVE, project scope, secret protection, STOP/PAUSE hooks) | `packages/core/src/computer/policy.ts` | DONE |
+| 3 | Process ownership registry (STOP kills only controlled children) | `packages/core/src/computer/registry.ts` | DONE |
+| 4 | Audit log (append-only, sanitized) | `runtime/audit.jsonl` | DONE |
+| 5 | Gate A: per-install auth token + strict origin allowlist + SSE auth | `packages/core/src/server.ts` | DONE (tested) |
+| 6 | Gate B: real Pause/Resume E2E (found + fixed empty-spec verification bug) | `tests/manual/gate-b-pause-resume.mts` | PASS (mechanics) |
+| 7 | Gate C: health caching (avg 116ms during browser launch) | `packages/core/src/server.ts` | PASS |
+| 8 | E2E A (filesystem), B (app launch), C (node script) | `tests/manual/m3-e2e-abc.mts` | ALL PASS |
+| 9 | E2E D (human behavior DOM loop), E (STOP), F (PAUSE), G (prompt injection) | `tests/manual/m3-e2e-defg.mts` | ALL PASS |
+| 10 | LOCAL API SECURITY acceptance (untrusted origins/tokens rejected) | `tests/manual/m3-e2e-defg.mts` | ALL PASS |
+| 11 | M3 unit tests (terminal/fs/policy/sanitizer/registry) | `tests/computer.test.mts` | 15/15 |
+| 12 | UI: authenticated JarvisClient (bootstrap token) + Computer Activity section | `apps/desktop/src/` | DONE (M3 UI E2E PASS) |
+
+### Security model (M3)
+
+- Local API: origin allowlist (JARVIS UI only) + per-install token for all
+  state-changing requests + SSE `?token=` (EventSource limitation, documented).
+- Every computer action: SecurityPolicy.authorize() → execute → structured
+  result → event → audit. DESTRUCTIVE requires explicit ownerConfirmed.
+- Secret locations (~/.ssh, .env, keychains, browser profiles) never touched
+  without explicit justification; external content is never instruction.
+
+### Platform status
+
+- macOS: **Implemented + Tested** (this machine).
+- Windows/Linux adapters: interface defined, **Not Yet Tested** (later milestone).
+
+## Milestone 4+ — not started
+
+Security hardening + privileged helper, voice, remote dashboard, MCP plugins, packaging.

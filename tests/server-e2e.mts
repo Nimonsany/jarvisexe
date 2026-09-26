@@ -62,8 +62,11 @@ const port = 7797;
 const server = new JarvisServer(runtimeDir, fakeOrchestrator(runtimeDir));
 await server.listen(port, '127.0.0.1');
 
+// fetch the per-install token via bootstrap (allowed origins only)
+const bootstrap = await fetch(`http://127.0.0.1:${port}/api/bootstrap`);
+const TOKEN = ((await bootstrap.json()) as { token: string }).token;
 const api = (p: string, method = 'GET', body?: unknown) =>
-  fetch(`http://127.0.0.1:${port}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json' } });
+  fetch(`http://127.0.0.1:${port}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TOKEN}` } });
 
 let passed = 0;
 const step = (name: string, fn: () => Promise<void>) =>
@@ -98,8 +101,10 @@ try {
     fake2.__slow = true;
     const srv2 = new JarvisServer(rt2, fake2);
     await srv2.listen(port + 1, '127.0.0.1');
+    const boot2 = await fetch(`http://127.0.0.1:${port + 1}/api/bootstrap`);
+    const TOKEN2 = ((await boot2.json()) as { token: string }).token;
     const api2 = (p: string, method = 'GET', body?: unknown) =>
-      fetch(`http://127.0.0.1:${port + 1}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json' } });
+      fetch(`http://127.0.0.1:${port + 1}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TOKEN2}` } });
     const t = await (await api2('/api/task', 'POST', { request: 'pausable' })).json();
     await sleep(800); // task is EXECUTING now (slow fake)
     const paused = await (await api2(`/api/task/${t.id}/pause`, 'POST')).json();
@@ -114,8 +119,10 @@ try {
     const rt3 = mkdtempSync(path.join(tmpdir(), 'jarvis-srv3-'));
     const srv3 = new JarvisServer(rt3, fakeOrchestrator(rt3));
     await srv3.listen(port + 2, '127.0.0.1');
+    const boot3 = await fetch(`http://127.0.0.1:${port + 2}/api/bootstrap`);
+    const TOKEN3 = ((await boot3.json()) as { token: string }).token;
     const api3 = (p: string, method = 'GET', body?: unknown) =>
-      fetch(`http://127.0.0.1:${port + 2}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json' } });
+      fetch(`http://127.0.0.1:${port + 2}${p}`, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${TOKEN3}` } });
     const t = await (await api3('/api/task', 'POST', { request: 'cancellable' })).json();
     await sleep(600);
     const cancelled = await (await api3(`/api/task/${t.id}/cancel`, 'POST')).json();
@@ -133,7 +140,7 @@ try {
 
   await step('SSE delivers task events', async () => {
     const controller = new AbortController();
-    const stream = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: controller.signal });
+    const stream = await fetch(`http://127.0.0.1:${port}/api/events?token=${TOKEN}`, { signal: controller.signal });
     assert.equal(stream.headers.get('content-type'), 'text/event-stream');
     const reader = stream.body!.getReader();
     await api('/api/task', 'POST', { request: 'sse task' });

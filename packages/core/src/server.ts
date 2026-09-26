@@ -265,7 +265,12 @@ export class JarvisServer {
         }
         if (req.method === 'POST' && action === 'pause') return void json(await this.orchestrator.pause(id));
         if (req.method === 'POST' && action === 'resume') return void json(await this.orchestrator.resume(id));
-        if (req.method === 'POST' && action === 'cancel') return void json(await this.orchestrator.cancel(id));
+        if (req.method === 'POST' && action === 'cancel') {
+          const t = await this.orchestrator.cancel(id);
+          const killed = this.computer.stopAll(); // STOP kills controlled child processes too
+          if (killed > 0) await this.store.emit(t, 'core', 'computer_processes_killed', 'warning', { killed });
+          return void json(t);
+        }
       }
 
       if (req.method === 'GET' && p === '/api/events') {
