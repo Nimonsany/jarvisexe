@@ -140,18 +140,25 @@ export class JarvisServer {
     this.busy = true;
     const dir = project || this.settings.defaultProjectDir || path.join(this.runtimeDir, '..', 'projects', `task-project-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
+    const startedAt = Date.now();
     // run in background; UI follows via SSE
     this.orchestrator.run(request, dir)
       .catch(() => {})
       .finally(() => { this.busy = false; });
-    // wait briefly so the task id exists before returning
-    for (let i = 0; i < 50; i++) {
+    // wait for the task id (opencode detect can take several seconds)
+    for (let i = 0; i < 120; i++) {
       const tasks = await this.store.listAll();
-      const match = tasks.find((t) => t.owner_request === request && Date.now() - new Date(t.created_at).getTime() < 15000);
+      const match = tasks.find((t) => t.owner_request === request && new Date(t.created_at).getTime() >= startedAt - 1000);
       if (match) return match;
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 150));
     }
-    throw new Error('task did not start');
+    // poll expired — cancel the orphan run so it doesn't execute unattended
+    const orphans = await this.store.listAll();
+    const orphan = orphans.find((t) => t.owner_request === request && new Date(t.created_at).getTime() >= startedAt - 1000);
+    if (orphan && !['COMPLETED', 'CANCELLED', 'FAILED'].includes(orphan.status)) {
+      await this.orchestrator.cancel(orphan.id).catch(() => {});
+    }
+    throw new Error('task did not start within 20s');
   }
 
   /** Opens the dedicated browser for manual ChatGPT sign-in; updates loginState. */
