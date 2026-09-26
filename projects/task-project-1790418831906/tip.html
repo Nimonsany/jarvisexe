@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tip Calculator (15%)</title>
+  <style>
+    body { font-family: sans-serif; max-width: 20rem; margin: 3rem auto; }
+    label { display: block; margin-bottom: 0.25rem; }
+    input { width: 100%; box-sizing: border-box; padding: 0.5rem; font-size: 1rem; }
+    p { font-size: 1.125rem; }
+  </style>
+</head>
+<body>
+  <h1>Tip Calculator (15%)</h1>
+  <label for="bill">Bill amount ($)</label>
+  <input id="bill" type="number" min="0" step="0.01" placeholder="0.00">
+  <p>Tip: $<span id="tip">0.00</span></p>
+  <p>Total: $<span id="total">0.00</span></p>
+
+  <script id="tip-logic">
+    function calcTip(bill) {
+      return (bill * 15) / 100;
+    }
+  </script>
+  <script>
+    const billInput = document.getElementById('bill');
+    const tipEl = document.getElementById('tip');
+    const totalEl = document.getElementById('total');
+    billInput.addEventListener('input', function () {
+      const bill = Number(billInput.value) || 0;
+      const tip = calcTip(bill);
+      tipEl.textContent = tip.toFixed(2);
+      totalEl.textContent = (bill + tip).toFixed(2);
+    });
+  </script>
+</body>
+</html>

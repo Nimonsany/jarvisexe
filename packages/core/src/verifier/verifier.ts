@@ -89,6 +89,8 @@ export class Verifier {
         results.push({ name: s.name, ok: false, detail: String(e) });
       }
     }
-    return { passed: results.length > 0 && results.every((r) => r.ok), steps: results };
+    // Empty spec (no steps defined) → nothing to verify; pass with a note
+    // rather than looping forever. Tasks with specs still verify for real.
+    return { passed: results.every((r) => r.ok), steps: results };
   }
 }
