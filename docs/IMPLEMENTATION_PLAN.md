@@ -92,3 +92,18 @@ Computer control as another TOOL PROVIDER under the same orchestration model.
 ## Milestone 4+ — not started
 
 Security hardening + privileged helper, voice, remote dashboard, MCP plugins, packaging.
+
+## Milestone 4 — Security Hardening + Privileged Helper (DONE)
+
+| # | Component | Where | Status |
+|---|-----------|-------|--------|
+| 1 | Permission levels 0-4 + ApprovalQueue (owner confirmation flow, 10-min auto-reject) | `packages/core/src/security/permissions.ts` | DONE |
+| 2 | Privilege Broker (approved patterns only: brew/launchctl; sudoers NEVER; OS password dialog to owner only — never stored) | `packages/core/src/security/privilege.ts` | DONE |
+| 3 | Prompt-injection scanner (12 patterns) + annotateInjections hooked into ChatGPT→OpenCode prompt flow | `packages/core/src/security/injection.ts`, `orchestrator.ts` | DONE |
+| 4 | Tamper-evident audit chain (sha256 hash chaining, verifyChain) | `packages/core/src/security/audit.ts` | DONE |
+| 5 | EMERGENCY STOP: API + UI button + Cmd/Ctrl+Shift+F12 kill switch; stops tasks, kills controlled processes, rejects new work until cleared | `server.ts`, `App.tsx`, `components/Security.tsx` | DONE |
+| 6 | Security tests (levels, approvals, broker gates, injection, audit tampering, kill switch E2E) | `tests/security-hardening.test.mts` | 10/10 |
+
+## Milestone 5+ — not started
+
+Voice, remote dashboard, MCP plugins, packaging, production hardening.
