@@ -11,6 +11,9 @@ import { sanitize } from './security/sanitize.js';
 import { ChatGPTBrowser, defaultProfileDir } from './browser/chatgpt.js';
 import type { Orchestrator } from './orchestrator.js';
 import { ComputerController } from './computer/index.js';
+import { ApprovalQueue } from './security/permissions.js';
+import { PrivilegeBroker } from './security/privilege.js';
+import { AuditLog } from './security/audit.js';
 
 export interface JarvisSettings {
   defaultProjectDir: string;
@@ -57,7 +60,12 @@ export class JarvisServer {
   /** Strict origin allowlist — the JARVIS UI only. Enforced server-side, not just via CORS headers. */
   private allowedOrigins = new Set(['http://localhost:5173', 'http://127.0.0.1:5173', 'tauri://localhost', 'http://tauri.localhost']);
   private healthCache: { data: Health; at: number } | null = null;
-  readonly computer: ComputerController;
+  readonly computer!: ComputerController;
+  readonly approvals: ApprovalQueue;
+  readonly privilege: PrivilegeBroker;
+  readonly audit: AuditLog;
+  /** Emergency stop: when true, no new tasks/actions start until cleared by the owner. */
+  private emergencyStopped = false;
 
   constructor(private runtimeDir: string, private orchestrator: Orchestrator, settings?: Partial<JarvisSettings>) {
     this.store = orchestrator.taskStore;
@@ -75,7 +83,11 @@ export class JarvisServer {
       this.token = randomUUID() + randomUUID().slice(0, 8);
       writeFileSync(tokenFile, this.token, { mode: 0o600 });
     }
-    this.computer = new ComputerController(this.store, runtimeDir);
+    this.approvals = new ApprovalQueue(this.store);
+    this.computer.approvalQueue = this.approvals;
+    this.privilege = new PrivilegeBroker(this.store, this.approvals);
+    this.audit = new AuditLog(path.join(runtimeDir, 'security-audit.jsonl'));
+    this.audit.append({ timestamp: new Date().toISOString(), kind: 'security', taskId: null, summary: 'JARVIS core started; security subsystem initialized' });
   }
 
   private settingsPath() { return path.join(this.runtimeDir, 'settings.json'); }
@@ -136,6 +148,7 @@ export class JarvisServer {
   }
 
   async createTask(request: string, project?: string): Promise<Task> {
+    if (this.emergencyStopped) throw new Error('JARVIS is in EMERGENCY STOP — clear it before new tasks');
     if (this.busy) throw new Error('A task is already running');
     this.busy = true;
     const dir = project || this.settings.defaultProjectDir || path.join(this.runtimeDir, '..', 'projects', `task-project-${Date.now()}`);
@@ -290,6 +303,7 @@ export class JarvisServer {
         const taskId = compMatch[1];
         try {
           const result = await this.computer.execute(body as unknown as import('./computer/types.js').ComputerActionInput, taskId);
+          this.audit.append({ timestamp: new Date().toISOString(), kind: 'computer', taskId, summary: `${(body as { capability?: string }).capability}.${(body as { operation?: string }).operation} ${result.success ? 'SUCCESS' : 'DENIED/FAILED'}`, detail: { durationMs: result.durationMs } });
           return void json(result);
         } catch (e) {
           return void json({ success: false, error: String(e instanceof Error ? e.message : e) }, 400);
@@ -299,6 +313,46 @@ export class JarvisServer {
         const taskId = compMatch[1];
         return void json(this.computer.history(taskId));
       }
+
+      // Privileged helper (LEVEL 3): broker with explicit owner approval
+      if (req.method === 'POST' && p === '/api/privileged') {
+        const r = (body as { command?: string; reason?: string; taskId?: string; ownerConfirmed?: boolean });
+        if (!r.command) return void json({ success: false, error: 'command required' }, 400);
+        const result = await this.privilege.execute({ command: r.command, reason: r.reason ?? '', taskId: r.taskId ?? null }, r.ownerConfirmed);
+        return void json(result);
+      }
+
+      // Owner approvals (LEVEL 3/4 confirmation flow)
+      if (p === '/api/approvals') {
+        if (req.method === 'GET') return void json(this.approvals.list());
+        const approveMatch = p.match(/^\/api\/approvals\/([^/]+)\/(approve|reject)$/);
+        if (req.method === 'POST' && approveMatch) {
+          const decided = this.approvals.decide(approveMatch[1], approveMatch[2] === 'approve');
+          if (!decided) return void json({ error: 'not found or already decided' }, 404);
+          this.audit.append({ timestamp: new Date().toISOString(), kind: 'approval', taskId: decided.taskId, summary: `${decided.operation} ${decided.status.toUpperCase()} by owner`, detail: { approvalId: decided.id, level: decided.level } });
+          return void json(decided);
+        }
+      }
+
+      // EMERGENCY STOP (kill switch)
+      if (req.method === 'POST' && p === '/api/emergency-stop') {
+        this.emergencyStopped = true;
+        const killedProcesses = this.computer.stopAll();
+        // cancel all active tasks (kills their opencode children + aborts browser automation)
+        const active = await this.store.listIncomplete();
+        for (const t of active) await this.orchestrator.cancel(t.id).catch(() => {});
+        this.audit.append({ timestamp: new Date().toISOString(), kind: 'security', taskId: null, summary: `EMERGENCY STOP activated: ${killedProcesses} processes killed, ${active.length} tasks cancelled` });
+        return void json({ stopped: true, killedProcesses, cancelledTasks: active.map((t) => t.id) });
+      }
+      if (req.method === 'POST' && p === '/api/emergency-stop/clear') {
+        this.emergencyStopped = false;
+        this.audit.append({ timestamp: new Date().toISOString(), kind: 'security', taskId: null, summary: 'EMERGENCY STOP cleared by owner' });
+        return void json({ stopped: false });
+      }
+      if (req.method === 'GET' && p === '/api/emergency-stop') return void json({ stopped: this.emergencyStopped });
+
+      // Security audit integrity
+      if (req.method === 'GET' && p === '/api/security-audit') return void json({ chain: this.audit.verifyChain(), entries: this.audit.entries().slice(-100) });
 
       json({ error: 'not found' }, 404);
     } catch (e) {

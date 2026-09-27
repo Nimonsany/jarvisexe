@@ -37,7 +37,7 @@ const RISK: Record<string, PermissionCategory> = {
 
 /** Locations JARVIS never touches automatically (secret protection). */
 const SECRET_PATH_PARTS = ['/.ssh/', '/.gnupg/', '/.env', '/keychain', '/cookies', '/browser-profile/', '/Library/Keychains/', 'id_rsa', 'id_ed25519', '/.aws/', '/.kube/'];
-const DESTRUCTIVE_PATTERNS = /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b|\bmkfs\b|\bdd\s+if=\/dev\/(zero|random)\s+of=\/dev\//;
+export const DESTRUCTIVE_PATTERNS = /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b|\bmkfs\b|\bdd\s+if=\/dev\/(zero|random)\s+of=\/dev\//;
 
 export function canonicalize(p: string): string {
   if (p.includes('\0')) throw new Error('null byte in path');

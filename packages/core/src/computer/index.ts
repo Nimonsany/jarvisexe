@@ -44,6 +44,9 @@ export class ComputerController {
     this.auditFile = path.join(runtimeDir, 'audit.jsonl');
   }
 
+  /** Approval queue (set by the server after construction). */
+  approvalQueue: import('../security/permissions.js').ApprovalQueue | null = null;
+
   /** STOP JARVIS: kill controlled child processes. */
   stopAll(): number {
     return this.registry.stopAll();
@@ -94,6 +97,33 @@ export class ComputerController {
     entry.requiresApproval = decision.requiresApproval;
 
     if (!decision.allowed) {
+      // approval-required (DESTRUCTIVE) → route through the owner-confirmation flow
+      if (decision.requiresApproval && this.approvalQueue) {
+        const approved = await this.approvalQueue.request({
+          taskId,
+          capability: input.capability,
+          operation: input.operation,
+          argumentsSummary: this.summarize(input),
+          riskLevel: decision.category,
+          reason: decision.reason,
+        });
+        if (approved) {
+          emitComputerEvent(this.store.bus, taskId, 'approval.granted', 'info', { operation: input.operation });
+          const retryInput = { ...input, ownerConfirmed: true, dryRun: false };
+          emitComputerEvent(this.store.bus, taskId, `computer.${input.capability}.${input.operation}.started`, 'info', { operation: input.operation, viaApproval: true });
+          const result2 = this.dispatch(retryInput, taskId);
+          entry.status = result2.success ? 'executed' : 'failed';
+          entry.durationMs = result2.durationMs;
+          this.audit(entry);
+          emitComputerEvent(this.store.bus, taskId, `computer.${input.capability}.${input.operation}.completed`, result2.success ? 'info' : 'error', { durationMs: result2.durationMs, success: result2.success, viaApproval: true });
+          return result2;
+        }
+        entry.status = 'denied';
+        entry.error = 'owner rejected the action';
+        this.audit(entry);
+        emitComputerEvent(this.store.bus, taskId, 'computer.action.denied', 'warning', { capability: input.capability, operation: input.operation, reason: 'owner rejected' });
+        return { success: false, tool: input.capability, action: input.operation, durationMs: 0, error: 'owner rejected the action' };
+      }
       entry.status = 'denied';
       entry.error = decision.reason;
       this.audit(entry);
