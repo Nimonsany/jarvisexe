@@ -16,7 +16,14 @@ import { AuditLog } from './security/audit.js';
 
 function repoDistDir(): string {
   // apps/desktop/dist relative to this file: packages/core/src/server.* → ../../../apps/desktop/dist
-  return path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../apps/desktop/dist');
+  // In the bundled sidecar import.meta.url is unavailable → returns '' (static serving
+  // off; the packaged app's UI comes from the Tauri webview instead).
+  try {
+    if (!import.meta.url) return '';
+    return path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../apps/desktop/dist');
+  } catch {
+    return '';
+  }
 }
 
 export interface JarvisSettings {

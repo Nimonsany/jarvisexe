@@ -1,0 +1,19 @@
+#!/bin/sh
+# JARVIS core sidecar launcher — spawned by the desktop shell
+DIR="$(cd "$(dirname "$0")" && pwd)"
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$HOME/.nvm/versions/node/$(ls "$HOME/.nvm/versions/node" 2>/dev/null | tail -1)/bin:/usr/bin:/bin:$PATH"
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ]; then
+  for CAND in /usr/local/bin/node /opt/homebrew/bin/node "$HOME/.local/bin/node"; do
+    [ -x "$CAND" ] && NODE_BIN="$CAND" && break
+  done
+fi
+if [ -z "$NODE_BIN" ]; then echo "node not found — install Node.js" >&2; exit 1; fi
+for CAND in "$DIR/core-runtime" "$DIR/../Resources/core-runtime" "$DIR/../core-runtime" "$DIR/../../../Resources/core-runtime" "$DIR"; do
+  if [ -f "$CAND/server.js" ]; then
+    export NODE_PATH="$CAND/node_modules:$NODE_PATH"
+    exec "$NODE_BIN" "$CAND/server.js" "$@"
+  fi
+done
+echo "JARVIS core runtime not found next to the sidecar" >&2
+exit 1
