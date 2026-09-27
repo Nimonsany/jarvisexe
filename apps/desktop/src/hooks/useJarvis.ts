@@ -76,10 +76,43 @@ export function useJarvis() {
 
   const openTask = useCallback((id: string) => { currentIdRef.current = id; refreshCurrent(id); }, [refreshCurrent]);
 
+  // Emergency stop (kill switch) + approvals
+  const [emergencyStopped, setEmergencyStopped] = useState(false);
+  const [approvals, setApprovals] = useState<import('../types').PendingApproval[]>([]);
+  const refreshApprovals = useCallback(async () => {
+    try {
+      const list = await JarvisClient.listApprovals();
+      setApprovals(list);
+      setEmergencyStopped(list.length > 0 ? false : emergencyStopped);
+    } catch { /* core offline */ }
+  }, [emergencyStopped]);
+  useEffect(() => {
+    refreshApprovals();
+    JarvisClient.getEmergencyStop().then((s) => setEmergencyStopped(s.stopped)).catch(() => {});
+    const unsub = JarvisClient.subscribeToEvents((e) => {
+      if (e.event.startsWith('approval.')) refreshApprovals();
+    });
+    return () => unsub();
+  }, [refreshApprovals]);
+
+  const emergencyStop = useCallback(async () => {
+    const r = await JarvisClient.emergencyStop();
+    setEmergencyStopped(true);
+    await refreshAll();
+    return r;
+  }, [refreshAll]);
+
+  const clearEmergencyStop = useCallback(async () => {
+    await JarvisClient.clearEmergencyStop();
+    setEmergencyStopped(false);
+  }, []);
+
   return {
     currentTask, tasks, events, health, settings, connected, busy,
     createTask, openTask, refreshAll, refreshCurrent, setSettings,
     openChatGPTLogin: () => { JarvisClient.openChatGPTLogin().catch(() => {}); },
+    emergencyStop, clearEmergencyStop, emergencyStopped, approvals, refreshApprovals,
+    decideApproval: async (id: string, approved: boolean) => { await JarvisClient.decideApproval(id, approved); await refreshApprovals(); },
     pause: (id: string) => JarvisClient.pauseTask(id).then((t) => setCurrentTask(t)).catch(() => {}),
     resume: async (id: string) => { await JarvisClient.resumeTask(id).catch((e) => { throw e; }); await refreshCurrent(id); },
     stop: (id: string) => JarvisClient.cancelTask(id).then((t) => setCurrentTask(t)).catch(() => {}),

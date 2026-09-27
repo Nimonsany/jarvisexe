@@ -83,6 +83,7 @@ export class JarvisServer {
       this.token = randomUUID() + randomUUID().slice(0, 8);
       writeFileSync(tokenFile, this.token, { mode: 0o600 });
     }
+    this.computer = new ComputerController(this.store, runtimeDir);
     this.approvals = new ApprovalQueue(this.store);
     this.computer.approvalQueue = this.approvals;
     this.privilege = new PrivilegeBroker(this.store, this.approvals);

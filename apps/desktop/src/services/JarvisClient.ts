@@ -44,6 +44,12 @@ export const JarvisClient = {
   openProject: (path: string) => req<{ ok: boolean }>('/api/project/open', 'POST', { path }),
   openChatGPTLogin: () => req<{ ok: boolean }>('/api/chatgpt/login', 'POST'),
   health: () => req<Health>('/api/health'),
+  listApprovals: () => req<import('../types').PendingApproval[]>('/api/approvals'),
+  decideApproval: (id: string, approved: boolean) => req<import('../types').PendingApproval>(`/api/approvals/${id}/${approved ? 'approve' : 'reject'}`, 'POST'),
+  emergencyStop: () => req<{ stopped: boolean; killedProcesses: number; cancelledTasks: string[] }>('/api/emergency-stop', 'POST'),
+  getEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop'),
+  clearEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop/clear', 'POST'),
+  securityAudit: () => req<{ chain: { ok: boolean; entries: number }; entries: unknown[] }>('/api/security-audit'),
 
   /** Subscribe to live task events (SSE). Auth via ?token= — EventSource cannot
    *  send headers; documented practical exception, token never logged. */

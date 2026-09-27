@@ -111,3 +111,8 @@ dd { margin: 0; }
   .sidebar button { padding: 8px 4px; font-size: 11px; }
   .brand { font-size: 11px; }
 }
+
+/* Emergency stop + approvals */
+.healthbar.emergency { border-color: var(--err); color: var(--err); background: #2a1214; }
+.approval-item { border-bottom: 1px solid var(--border); padding: 8px 0; }
+.approval-item:last-child { border-bottom: none; }

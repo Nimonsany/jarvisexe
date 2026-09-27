@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useJarvis } from './hooks/useJarvis';
 import { Dashboard } from './pages/Dashboard';
 import { Tasks } from './pages/Tasks';
@@ -14,6 +14,19 @@ export default function App() {
   const [view, setView] = useState<View>({ page: 'dashboard' });
 
   const nav = (v: View) => setView(v);
+
+  // KILL SWITCH: Cmd/Ctrl + Shift + F12 → emergency stop
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'F12' && e.shiftKey && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        const ok = window.confirm('EMERGENCY STOP JARVIS?\n\nThis stops all new tasks, cancels the current task and terminates controlled child processes.');
+        if (ok) void j.emergencyStop();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [j]);
 
   return (
     <div className="app">

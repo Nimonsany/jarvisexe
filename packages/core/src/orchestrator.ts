@@ -7,6 +7,7 @@ import { parsePlanResponse, parseCorrectiveResponse } from './browser/parser.js'
 import { OpenCodeController } from './opencode/controller.js';
 import { Supervisor, formatIncident } from './supervisor/supervisor.js';
 import { sanitizeTruncated, sanitize } from './security/sanitize.js';
+import { annotateInjections, scanForInjections } from './security/injection.js';
 import { Verifier, type SoftwareVerificationSpec } from './verifier/verifier.js';
 
 export interface OrchestratorOptions {
@@ -131,8 +132,13 @@ export class Orchestrator {
       const planResponse = await this.chatgpt.ask(plannerPrompt);
       const dir = this.store.taskDir(task.id);
       await writeFile(path.join(dir, 'chatgpt-plan.md'), planResponse);
+      // prompt-injection defense: ChatGPT responses are untrusted data
+      const planScan = scanForInjections(planResponse);
+      if (!planScan.clean) {
+        await this.store.emit(task, 'security', 'prompt_injection_flagged', 'warning', { source: 'chatgpt-plan', findings: planScan.findings.map((f) => f.label) });
+      }
       const parsed = parsePlanResponse(planResponse);
-      await writeFile(path.join(dir, 'opencode-prompt.md'), parsed.opencodePrompt);
+      await writeFile(path.join(dir, 'opencode-prompt.md'), annotateInjections(parsed.opencodePrompt));
       await this.store.transition(task, 'PLAN_RECEIVED');
       await this.store.emit(task, 'planner', parsed.usedFallback ? 'fallback_prompt_generated' : 'master_prompt_extracted', 'info');
 
@@ -308,7 +314,11 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
     await this.store.emit(task, 'planner', 'consulting_chatgpt_for_debug', 'warning', { cycle: task.chatgpt_cycle_count });
     const debugResponse = await this.chatgpt.ask(incidentText);
     await writeFile(path.join(dir, `chatgpt-debug-${task.chatgpt_cycle_count}.md`), debugResponse);
+    const debugScan = scanForInjections(debugResponse);
+    if (!debugScan.clean) {
+      await this.store.emit(task, 'security', 'prompt_injection_flagged', 'warning', { source: 'chatgpt-debug', findings: debugScan.findings.map((f) => f.label) });
+    }
     await this.store.transition(task, 'PLAN_RECEIVED');
-    return parseCorrectiveResponse(debugResponse);
+    return annotateInjections(parseCorrectiveResponse(debugResponse));
   }
 }

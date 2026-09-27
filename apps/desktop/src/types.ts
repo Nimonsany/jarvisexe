@@ -55,6 +55,20 @@ export interface ProjectInfo {
   status?: string;
 }
 
+export interface PendingApproval {
+  id: string;
+  taskId: string | null;
+  capability: string;
+  operation: string;
+  argumentsSummary: string;
+  riskLevel: string;
+  level: number;
+  reason: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+  decidedAt?: string;
+}
+
 // Authoritative backend states → display form. No frontend state machine.
 export const STATUS_DISPLAY: Record<TaskStatus, { label: string; mark: 'done' | 'active' | 'pending' | 'bad' }> = {
   NEW: { label: 'New', mark: 'pending' },
