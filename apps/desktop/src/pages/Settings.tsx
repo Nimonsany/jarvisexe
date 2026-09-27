@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { JarvisClient } from '../services/JarvisClient';
+import { JarvisClient, setDeviceToken } from '../services/JarvisClient';
 import type { Settings } from '../types';
 
 export function SettingsPage({ settings, onSaved }: { settings: Settings | null; onSaved: (s: Settings) => void }) {
   const [draft, setDraft] = useState<Settings | null>(settings);
   const [msg, setMsg] = useState<string | null>(null);
+  const [tokenShown, setTokenShown] = useState<string | null>(null);
+  const [deviceToken, setTokenInput] = useState('');
   useEffect(() => { if (!draft && settings) setDraft(settings); }, [settings, draft]);
   if (!draft) return <div className="page"><p className="muted">Loading settings…</p></div>;
 
@@ -15,10 +17,24 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
     try {
       const saved = await JarvisClient.updateSettings(draft);
       onSaved(saved);
-      setMsg('Saved.');
+      setMsg('Saved. If remote access was enabled, restart the core server to bind the Tailscale interface.');
     } catch (e) {
       setMsg(String(e instanceof Error ? e.message : e));
     }
+  };
+
+  const revealToken = async () => {
+    try {
+      const r = await fetch('http://127.0.0.1:7788/api/bootstrap');
+      if (r.ok) setTokenShown(((await r.json()) as { token: string }).token);
+      else setTokenShown('Local-only — available on the JARVIS machine.');
+    } catch { setTokenShown('Core offline.'); }
+  };
+
+  const saveDeviceToken = () => {
+    if (!deviceToken.trim()) return;
+    setDeviceToken(deviceToken);
+    setMsg('Device token saved for this browser.');
   };
 
   return (
@@ -58,6 +74,9 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
             <option value="light">Light</option>
           </select>
         </label>
+        <label>Remote access (Tailscale, token-gated — restart the core server after changing)
+          <input type="checkbox" checked={draft.remoteAccess} onChange={(e) => set('remoteAccess', e.target.checked)} />
+        </label>
         <label>Log verbosity (not active yet)
           <select value={draft.logVerbosity} onChange={(e) => set('logVerbosity', e.target.value as Settings['logVerbosity'])}>
             <option value="quiet">Quiet</option>
@@ -69,6 +88,16 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
       <div className="controls">
         <button className="primary" onClick={save}>Save settings</button>
         {msg && <span className="muted">{msg}</span>}
+      </div>
+      <h2>Remote device authorization</h2>
+      <p className="muted">A remote device (e.g. over Tailscale) must present this token for every request. Enter it once on the remote device.</p>
+      <div className="controls">
+        <button onClick={revealToken}>Show device token</button>
+        {tokenShown && <span className="mono">{tokenShown.slice(0, 20)}…</span>}
+      </div>
+      <div className="controls">
+        <input type="text" placeholder="Paste device token on THIS device (remote setups)" value={deviceToken} onChange={(e) => setTokenInput(e.target.value)} aria-label="Device token" />
+        <button onClick={saveDeviceToken}>Save device token</button>
       </div>
       <p className="muted">Secrets are never stored here. ChatGPT login lives only in the dedicated browser profile.</p>
     </div>

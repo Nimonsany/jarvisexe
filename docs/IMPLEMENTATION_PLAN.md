@@ -128,3 +128,22 @@ larger model can be swapped in `~/.jarvis/models/` without code changes.
 ## Milestone 6+ — not started
 
 Remote dashboard, MCP plugins, packaging, production hardening.
+
+## Milestone 6 — Remote UI (DONE)
+
+| # | Component | Where | Status |
+|---|-----------|-------|--------|
+| 1 | Dashboard served by the core at http://127.0.0.1:7788 (built UI, SPA fallback, path-traversal guard, nosniff) | `server.ts` serveStatic | DONE (tested) |
+| 2 | Remote access: opt-in setting (default OFF) + Tailscale IP detection (100.64.0.0/10) + dual binding | `server.ts` | DONE |
+| 3 | Device authorization: remote origins token-gated for EVERY request; bootstrap stays local-only; device token entered once, stored in localStorage | `server.ts`, `JarvisClient.ts` | DONE (tested) |
+| 4 | Settings: remote access toggle + device token reveal/entry + type-validated settings | `Settings.tsx` | DONE |
+| 5 | Remote/UI tests (static serving, 401/403/200 origin matrix, type validation) | `tests/m6-remote.test.mts` | 4/4 |
+
+Security matrix (tested):
+- remoteAccess OFF: foreign origin → 403 (even with token); random webpage cannot control JARVIS.
+- remoteAccess ON (Tailscale): no token → 401 everywhere; with device token → 200;
+  bootstrap never leaks the token to remote origins; untrusted web origins still token-gated.
+
+## Milestone 7+ — not started
+
+Packaging (DMG/EXE/AppImage/DEB), production hardening.

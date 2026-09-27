@@ -47,6 +47,7 @@ export interface Settings {
   startMinimized: boolean;
   theme: 'dark' | 'light';
   logVerbosity: 'quiet' | 'normal' | 'verbose';
+  remoteAccess: boolean;
 }
 
 export interface ProjectInfo {

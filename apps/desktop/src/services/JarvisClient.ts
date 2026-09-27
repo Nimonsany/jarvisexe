@@ -3,14 +3,31 @@ import type { Task, TaskEvent, Health, Settings, ProjectInfo } from '../types';
 const BASE = 'http://127.0.0.1:7788';
 let authToken: string | null = null;
 
-/** Fetch the per-install token from the bootstrap endpoint (allowed origins only).
- *  The token is never logged and never placed in URLs (except SSE, see below). */
+/** Fetch the per-install token.
+ *  - Local (allowlisted origin): from the bootstrap endpoint.
+ *  - Remote (e.g. a Tailscale IP): bootstrap is local-only — the device token
+ *    entered once by the owner and stored in localStorage (device authorization). */
 async function ensureToken(): Promise<string> {
   if (authToken) return authToken;
-  const r = await fetch(`${BASE}/api/bootstrap`);
-  if (!r.ok) throw new Error('bootstrap failed');
-  authToken = ((await r.json()) as { token: string }).token;
-  return authToken;
+  const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('jarvis-device-token') : null;
+  try {
+    const r = await fetch(`${BASE}/api/bootstrap`);
+    if (r.ok) {
+      authToken = ((await r.json()) as { token: string }).token;
+      return authToken;
+    }
+  } catch { /* core offline */ }
+  if (stored) {
+    authToken = stored;
+    return authToken;
+  }
+  throw new Error('DEVICE_TOKEN_REQUIRED');
+}
+
+/** Device authorization: the owner enters the token on a remote device. */
+export function setDeviceToken(token: string): void {
+  if (typeof localStorage !== 'undefined') localStorage.setItem('jarvis-device-token', token.trim());
+  authToken = token.trim();
 }
 
 async function req<T>(path: string, method = 'GET', body?: unknown): Promise<T> {

@@ -1,9 +1,8 @@
 import http from 'node:http';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { TaskStore } from './task/store.js';
 import type { Task, TaskEvent } from './task/types.js';
@@ -14,6 +13,11 @@ import { ComputerController } from './computer/index.js';
 import { ApprovalQueue } from './security/permissions.js';
 import { PrivilegeBroker } from './security/privilege.js';
 import { AuditLog } from './security/audit.js';
+
+function repoDistDir(): string {
+  // apps/desktop/dist relative to this file: packages/core/src/server.* → ../../../apps/desktop/dist
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../apps/desktop/dist');
+}
 
 export interface JarvisSettings {
   defaultProjectDir: string;
@@ -26,6 +30,7 @@ export interface JarvisSettings {
   startMinimized: boolean;     // not wired yet (later milestone)
   theme: 'dark' | 'light';
   logVerbosity: 'quiet' | 'normal' | 'verbose';
+  remoteAccess: boolean;       // M6: opt-in remote (Tailscale) dashboard access
 }
 
 const DEFAULT_SETTINGS: JarvisSettings = {
@@ -39,6 +44,7 @@ const DEFAULT_SETTINGS: JarvisSettings = {
   startMinimized: false,
   theme: 'dark',
   logVerbosity: 'normal',
+  remoteAccess: false,
 };
 
 export interface Health {
@@ -94,6 +100,38 @@ export class JarvisServer {
 
   private settingsPath() { return path.join(this.runtimeDir, 'settings.json'); }
 
+  /** Serve the built dashboard UI (apps/desktop/dist). Returns true if served. */
+  private serveStatic(p: string, res: http.ServerResponse, cors: Record<string, string>): boolean {
+    const distDir = repoDistDir();
+    if (!existsSync(distDir)) return false;
+    const MIME: Record<string, string> = {
+      '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+      '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.json': 'application/json',
+    };
+    // path traversal guard: resolve inside distDir only
+    let file = p === '/' ? '/index.html' : p;
+    const distAbs = path.resolve(distDir);
+    let full = path.resolve(path.join(distAbs, file));
+    if (!full.startsWith(distAbs)) return false;
+    if (!existsSync(full) || statSync(full).isDirectory()) {
+      full = path.join(distDir, 'index.html'); // SPA fallback
+      if (!existsSync(full)) return false;
+    }
+    const ext = path.extname(full).toLowerCase();
+    res.writeHead(200, { 'Content-Type': MIME[ext] ?? 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', ...cors });
+    res.end(readFileSync(full));
+    return true;
+  }
+
+  /** Detect the Tailscale IP (100.64.0.0/10) for opt-in remote binding. */
+  detectTailscaleIP(): string | null {
+    try {
+      const out = execFileSync('ifconfig', { encoding: 'utf8', timeout: 5000 });
+      const m = out.match(/inet\s+(100\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+
   async getSettings(): Promise<JarvisSettings> {
     try {
       const raw = await readFile(this.settingsPath(), 'utf8');
@@ -104,6 +142,13 @@ export class JarvisServer {
   async updateSettings(patch: Partial<JarvisSettings>): Promise<JarvisSettings> {
     const current = await this.getSettings();
     const next = { ...current, ...patch };
+    // type validation: booleans/numbers must keep their types
+    for (const k of ['headless', 'finalReview', 'startMinimized', 'remoteAccess'] as const) {
+      if (k in patch && typeof patch[k] !== 'boolean') throw new Error(`${k} must be a boolean`);
+    }
+    for (const k of ['autoConsultThreshold', 'maxRetries'] as const) {
+      if (k in patch && (typeof patch[k] !== 'number' || Number.isNaN(patch[k]))) throw new Error(`${k} must be a number`);
+    }
     // validate paths that must exist if provided
     if (next.defaultProjectDir && !existsSync(next.defaultProjectDir)) {
       throw new Error(`defaultProjectDir does not exist: ${next.defaultProjectDir}`);
@@ -236,18 +281,30 @@ export class JarvisServer {
       res.end(JSON.stringify(data));
     };
 
-    // SECURITY: foreign origins (e.g. a random website in Chrome) are rejected outright.
-    if (!allowed) return void json({ error: 'origin not allowed' }, 403);
+    // SECURITY: origin policy.
+    //  - Local allowlisted origins (JARVIS UI): full access (token for state-changing ops).
+    //  - Remote (non-allowlisted origin, e.g. a Tailscale IP when remote access is on):
+    //      the token is required for EVERY request — device authorization by token.
+    //      /api/bootstrap never serves the token to remote origins.
+    //  - Remote access OFF: foreign origins (a random website in Chrome) rejected outright.
+    const settings = await this.getSettings();
+    const remoteAllowed = settings.remoteAccess === true;
+    if (!allowed && !remoteAllowed) return void json({ error: 'origin not allowed' }, 403);
 
-    // SECURITY: bootstrap is the ONLY way an allowed origin obtains the token.
-    // State-changing requests (POST, SSE) must then present it.
     const isSSE = req.method === 'GET' && p === '/api/events';
     const isPost = req.method === 'POST';
-    const needsToken = isSSE || isPost;
-    const presented = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? String(req.headers['x-jarvis-token'] ?? '') ?? '';
+    const presented = req.headers.authorization?.replace(/^Bearer\s+/i, '') ?? String(req.headers['x-jarvis-token'] ?? '');
     const sseToken = isSSE ? (url.searchParams.get('token') ?? '') : '';
     const tokenOk = presented === this.token || (isSSE && sseToken === this.token && sseToken !== '');
-    if (needsToken && !tokenOk) return void json({ error: 'unauthenticated' }, 401);
+    // remote (non-allowlisted) origins: token for EVERYTHING, and no bootstrap
+    const remoteOrigin = !allowed;
+    if (remoteOrigin) {
+      if (p === '/api/bootstrap') return void json({ error: 'bootstrap is local-only; present your device token' }, 401);
+      if (!tokenOk) return void json({ error: 'unauthenticated — enter your device token' }, 401);
+    } else {
+      const needsToken = isSSE || isPost;
+      if (needsToken && !tokenOk) return void json({ error: 'unauthenticated' }, 401);
+    }
 
     let body: Record<string, unknown> = {};
     try {
@@ -402,6 +459,12 @@ export class JarvisServer {
         }
       }
 
+      // Dashboard UI: serve the built frontend (the desktop app remains primary;
+      // this makes http://127.0.0.1:7788 usable directly without a dev server)
+      if (req.method === 'GET' && !p.startsWith('/api/')) {
+        if (this.serveStatic(p, res, cors)) return;
+      }
+
       json({ error: 'not found' }, 404);
     } catch (e) {
       if (!res.headersSent) json({ error: String(e) }, 500);
@@ -411,10 +474,22 @@ export class JarvisServer {
 
   private httpServer: http.Server | null = null;
 
-  listen(port = 7788, host = '127.0.0.1'): Promise<void> {
+  async listen(port = 7788, host = '127.0.0.1'): Promise<void> {
     const srv = http.createServer((req, res) => this.handle(req, res));
     this.httpServer = srv;
-    return new Promise((resolve) => srv.listen(port, host, resolve));
+    await new Promise<void>((resolve) => srv.listen(port, host, resolve));
+    // M6: opt-in remote access — bind the Tailscale interface too (token-gated)
+    const settings = await this.getSettings();
+    if (settings.remoteAccess) {
+      const tsIp = this.detectTailscaleIP();
+      if (tsIp) {
+        // a listening server can take additional listeners via listen({host, port})
+        await new Promise<void>((resolve) => srv.listen({ host: tsIp, port, exclusive: false }, resolve));
+        console.log(`Remote dashboard (token-gated): http://${tsIp}:${port}`);
+      } else {
+        console.log('remoteAccess is on but no Tailscale IP detected — local only');
+      }
+    }
   }
 
   close(): Promise<void> {
