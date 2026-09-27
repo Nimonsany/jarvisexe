@@ -39,6 +39,33 @@ async function main() {
 
   const store = new TaskStore(runtimeDir);
 
+  if (command === 'voice') {
+    // Milestone 5: wake word → STT → command → JARVIS Core → TTS
+    const { VoiceLayer } = await import('./voice/voice.js');
+    const { Orchestrator } = await import('./orchestrator.js');
+    const plannerPromptTemplate = await readFile(resolve(repoRoot, 'prompts/chatgpt-planner.md'), 'utf8');
+    const opencodeRules = await readFile(resolve(repoRoot, 'prompts/opencode-master.md'), 'utf8');
+    const orchestrator = new Orchestrator({ runtimeDir, plannerPromptTemplate, opencodeRules, headless: process.env.JARVIS_HEADLESS === 'true' });
+    const voice = new VoiceLayer();
+    if (!voice.whisperReady()) return console.log('whisper-cli not found — brew install whisper-cpp');
+    if (!voice.modelReady()) return console.log('whisper model not downloaded — run scripts/download-whisper-model.sh');
+    const deviceArg = rest[0] ? Number(rest[0]) : undefined;
+    const say = (m: string) => console.log(m);
+    voice.startListenLoop(async (command) => {
+      const { mkdirSync } = await import('node:fs');
+      const projectDir = resolve(runtimeDir, '..', 'projects', `task-project-${Date.now()}`);
+      mkdirSync(projectDir, { recursive: true });
+      say(`→ submitting to JARVIS Core: "${command}"`);
+      orchestrator.run(command, projectDir)
+        .then((task) => {
+          say(`✓ ${task.id} ${task.status}`);
+          voice.speak(task.status === 'COMPLETED' ? `Task completed.` : `Task needs attention.`);
+        })
+        .catch(() => voice.speak('Task failed. Check the logs.'));
+    }, deviceArg, say);
+    return; // loop runs until Ctrl+C
+  }
+
   if (command === '--resume') {
     const tasks = await store.listIncomplete();
     if (!tasks.length) return console.log('No incomplete tasks.');

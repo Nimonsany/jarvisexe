@@ -66,6 +66,7 @@ export class JarvisServer {
   readonly audit: AuditLog;
   /** Emergency stop: when true, no new tasks/actions start until cleared by the owner. */
   private emergencyStopped = false;
+  private voice: import('./voice/voice.js').VoiceLayer | null = null;
 
   constructor(private runtimeDir: string, private orchestrator: Orchestrator, settings?: Partial<JarvisSettings>) {
     this.store = orchestrator.taskStore;
@@ -354,6 +355,52 @@ export class JarvisServer {
 
       // Security audit integrity
       if (req.method === 'GET' && p === '/api/security-audit') return void json({ chain: this.audit.verifyChain(), entries: this.audit.entries().slice(-100) });
+
+      // Voice (Milestone 5): push-to-talk + TTS + status
+      if (p.startsWith('/api/voice')) {
+        const { VoiceLayer } = await import('./voice/voice.js');
+        this.voice ??= new VoiceLayer();
+        if (req.method === 'GET' && p === '/api/voice/status') {
+          return void json({ whisper: this.voice.whisperReady(), model: this.voice.modelReady(), mics: this.voice.listMicDevices() });
+        }
+        if (req.method === 'POST' && p === '/api/voice/push-to-talk') {
+          // records from the mic (OS prompts for permission on first use) → STT → command
+          const duration = Number((body as { durationMs?: number }).durationMs ?? 8000);
+          const device = (body as { deviceIndex?: number }).deviceIndex;
+          try {
+            const r = this.voice.pushToTalk(duration, device);
+            this.audit.append({ timestamp: new Date().toISOString(), kind: 'voice', taskId: null, summary: `push-to-talk transcribed (${r.language}, ${r.text.length} chars)` });
+            return void json(r);
+          } catch (e) {
+            return void json({ error: String(e instanceof Error ? e.message : e) }, 400);
+          }
+        }
+        if (req.method === 'POST' && p === '/api/voice/speak') {
+          const text = String((body as { text?: string }).text ?? '');
+          if (!text) return void json({ error: 'text required' }, 400);
+          const r = this.voice.speak(sanitize(text));
+          return void json(r);
+        }
+        if (req.method === 'POST' && p === '/api/voice/listen-start') {
+          const device = (body as { deviceIndex?: number }).deviceIndex;
+          this.voice.startListenLoop(async (command) => {
+            // wake word detected → submit to the orchestrator (busy-checked) + speak the result
+            this.audit.append({ timestamp: new Date().toISOString(), kind: 'voice', taskId: null, summary: `wake word command: ${command.slice(0, 80)}` });
+            try {
+              const task = await this.createTask(command);
+              this.voice?.speak('Working on it.');
+              void task;
+            } catch {
+              this.voice?.speak('Cannot start. A task may be running.');
+            }
+          }, device, (msg) => this.store.bus.emit('event', { timestamp: new Date().toISOString(), task_id: 'TASK-NONE', component: 'voice', event: msg, severity: 'info' }));
+          return void json({ listening: true });
+        }
+        if (req.method === 'POST' && p === '/api/voice/listen-stop') {
+          this.voice.stopListenLoop();
+          return void json({ listening: false });
+        }
+      }
 
       json({ error: 'not found' }, 404);
     } catch (e) {
