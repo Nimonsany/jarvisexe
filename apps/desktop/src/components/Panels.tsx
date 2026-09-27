@@ -2,15 +2,40 @@ import { useState } from 'react';
 import type { Task } from '../types';
 import { StatusPill } from './Status';
 
-export function TaskInput({ onSubmit, busy }: { onSubmit: (request: string, project?: string) => void; busy: boolean }) {
+export function TaskInput({ onSubmit, busy, onPushToTalk }: {
+  onSubmit: (request: string, project?: string) => void;
+  busy: boolean;
+  onPushToTalk?: () => Promise<string | null>;
+}) {
   const [value, setValue] = useState('');
   const [project, setProject] = useState('');
+  const [listening, setListening] = useState(false);
+  const [voiceMsg, setVoiceMsg] = useState<string | null>(null);
 
   const submit = () => {
     const request = value.trim();
     if (!request || busy) return;
     onSubmit(request, project.trim() || undefined);
     setValue('');
+  };
+
+  const mic = async () => {
+    if (!onPushToTalk || listening) return;
+    setListening(true);
+    setVoiceMsg('🎤 Listening… speak now');
+    try {
+      const r = await onPushToTalk();
+      if (r) {
+        setValue(r);
+        setVoiceMsg(`🗣 "${r.slice(0, 80)}" — press Execute or edit`);
+      } else {
+        setVoiceMsg('Nothing heard.');
+      }
+    } catch (e) {
+      setVoiceMsg(String(e instanceof Error ? e.message : e).slice(0, 90));
+    } finally {
+      setListening(false);
+    }
   };
 
   return (
@@ -37,6 +62,10 @@ export function TaskInput({ onSubmit, busy }: { onSubmit: (request: string, proj
       <button className="primary" onClick={submit} disabled={busy || !value.trim()} aria-label="Execute task">
         {busy ? 'Starting…' : 'Execute'}
       </button>
+      <button className="mic" onClick={mic} disabled={busy || listening} aria-label="Push to talk (microphone)" title="Push to talk">
+        {listening ? '⏺' : '🎤'}
+      </button>
+      {voiceMsg && <p className="muted voice-msg">{voiceMsg}</p>}
     </div>
   );
 }

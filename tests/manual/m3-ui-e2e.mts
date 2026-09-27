@@ -5,17 +5,22 @@
 import { chromium } from 'playwright';
 
 const page = await (await chromium.launch({ headless: true, channel: 'chrome' })).newPage();
+page.on('pageerror', (e) => console.log('PAGEERROR:', String(e).slice(0, 150)));
+page.on('console', (m) => { if (m.type() === 'error') console.log('CONSOLE:', m.text().slice(0, 120)); });
 let failures = 0;
 const ok = (m: string) => console.log(`✔ ${m}`);
 const fail = (m: string) => { failures++; console.log(`✖ ${m}`); };
 
 await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-await page.waitForSelector('#task-request', { timeout: 20000 });
+await page.waitForTimeout(5000); // vite dev first-load can be slow
+await page.waitForSelector('#task-request', { timeout: 30000 });
 ok('UI loaded (bootstrap + token auth worked — page rendered data)');
 
 // health bar shows live states (authenticated fetches)
-await page.waitForSelector('.healthbar', { timeout: 15000 });
-const health = await page.locator('.healthbar').innerText();
+await page.waitForTimeout(4000);
+const hbCount = await page.locator('.healthbar').count();
+console.log('healthbar count:', hbCount);
+const health = hbCount ? await page.locator('.healthbar').first().innerText() : '';
 if (health.includes('JARVIS Core')) ok(`M3 UI: health bar live (${health.replace(/\s+/g, ' ').slice(0, 80)})`);
 else fail('M3 UI: health bar missing');
 

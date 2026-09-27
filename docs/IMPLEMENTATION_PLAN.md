@@ -107,3 +107,24 @@ Security hardening + privileged helper, voice, remote dashboard, MCP plugins, pa
 ## Milestone 5+ — not started
 
 Voice, remote dashboard, MCP plugins, packaging, production hardening.
+
+## Milestone 5 — Voice (DONE)
+
+| # | Component | Where | Status |
+|---|-----------|-------|--------|
+| 1 | VoiceLayer: whisper.cpp STT (100% local, ggml-small 487MB) | `packages/core/src/voice/voice.ts` | DONE |
+| 2 | Wake word "Jarvis" — fuzzy variants (javas/jervis) + Devanagari ("जार्भिस"/"जार भिस"); must START the utterance (background speech ignored) | `voice.ts` | DONE (tested) |
+| 3 | Push-to-talk (CLI + UI mic button via /api/voice/push-to-talk) | `cli.ts`, `Panels.tsx` | DONE |
+| 4 | TTS: `say` — Devanagari → hi_IN "Lekha" voice; English → default | `voice.ts`, `/api/voice/speak` | DONE |
+| 5 | Nepali/English/mixed: whisper auto language + Devanagari script detection | `voice.ts` | DONE (REAL STT tested) |
+| 6 | Standalone voice mode: `jarvis voice` (wake word → command → orchestrator → TTS) | `cli.ts` | DONE |
+| 7 | Voice tests incl REAL STT (English + Nepali via hi_IN voice) | `tests/voice.test.mts` | 8/8 |
+| 8 | Mic: ffmpeg avfoundation (Built-in Microphone detected via /api/voice/status) | `voice.ts` | DONE |
+
+Voice notes: macOS microphone permission prompts on first recording. Whisper
+`small` garbles some Nepali pronunciation (Hindi-voice + small model) — a
+larger model can be swapped in `~/.jarvis/models/` without code changes.
+
+## Milestone 6+ — not started
+
+Remote dashboard, MCP plugins, packaging, production hardening.

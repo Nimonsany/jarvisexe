@@ -1,6 +1,7 @@
 import { TaskInput, CurrentTaskPanel, ErrorBanner, HealthBar } from '../components/Panels';
 import { Pipeline, ActivityList, ComputerActivity } from '../components/Status';
 import { ApprovalRequests, EmergencyStopBar } from '../components/Security';
+import { JarvisClient } from '../services/JarvisClient';
 import type { useJarvis } from '../hooks/useJarvis';
 
 export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
@@ -12,7 +13,11 @@ export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
       <p className="muted tagline">Local autonomous computer orchestrator</p>
 
       <ApprovalRequests approvals={j.approvals} onDecide={j.decideApproval} />
-      <TaskInput onSubmit={(request, project) => j.createTask(request, project)} busy={j.busy} />
+      <TaskInput
+        onSubmit={(request, project) => j.createTask(request, project)}
+        busy={j.busy}
+        onPushToTalk={() => JarvisClient.pushToTalk(8000).then((r) => r.command ?? r.text).catch((e) => { throw e; })}
+      />
 
       <h2>Current Task</h2>
       <Pipeline task={j.currentTask} />

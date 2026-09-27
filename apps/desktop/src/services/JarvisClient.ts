@@ -50,6 +50,9 @@ export const JarvisClient = {
   getEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop'),
   clearEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop/clear', 'POST'),
   securityAudit: () => req<{ chain: { ok: boolean; entries: number }; entries: unknown[] }>('/api/security-audit'),
+  voiceStatus: () => req<{ whisper: boolean; model: boolean; mics: { index: number; name: string }[] }>('/api/voice/status'),
+  pushToTalk: (durationMs = 8000, deviceIndex?: number) => req<{ text: string; language: string; command: string | null }>('/api/voice/push-to-talk', 'POST', { durationMs, deviceIndex }),
+  speak: (text: string) => req<{ ok: boolean; voice: string }>('/api/voice/speak', 'POST', { text }),
 
   /** Subscribe to live task events (SSE). Auth via ?token= — EventSource cannot
    *  send headers; documented practical exception, token never logged. */

@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const p = await (await chromium.launch({ headless: true, channel: 'chrome' })).newPage();
+p.on('console', (m) => { if (m.type() === 'error') console.log('ERR:', m.text().slice(0, 120)); });
+p.on('pageerror', (e) => console.log('PAGEERROR:', String(e).slice(0, 150)));
+await p.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
+await p.waitForTimeout(4000);
+console.log('healthbar:', await p.locator('.healthbar').count());
+console.log('body:', (await p.locator('body').innerText()).slice(0, 200));
+await p.context().close();
+process.exit(0);
