@@ -4,7 +4,8 @@
  * Run: npx tsx tests/manual/consult-agents.mts  (no server needed — direct controller)
  */
 import { ChatGPTBrowser, defaultProfileDir } from '../../packages/core/src/browser/chatgpt.js';
-import { writeFile, mkdirSync } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { mkdirSync as mkdirSyncSync } from 'node:fs';
 

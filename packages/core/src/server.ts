@@ -2,6 +2,7 @@ import http from 'node:http';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { TaskStore } from './task/store.js';
@@ -13,6 +14,8 @@ import { ComputerController } from './computer/index.js';
 import { ApprovalQueue } from './security/permissions.js';
 import { PrivilegeBroker } from './security/privilege.js';
 import { AuditLog } from './security/audit.js';
+import { AgentBotProvider } from './agents/provider.js';
+import { Context7Broker } from './agents/context7-broker.js';
 
 function repoDistDir(): string {
   // apps/desktop/dist relative to this file: packages/core/src/server.* → ../../../apps/desktop/dist
@@ -80,6 +83,8 @@ export class JarvisServer {
   /** Emergency stop: when true, no new tasks/actions start until cleared by the owner. */
   private emergencyStopped = false;
   private voice: import('./voice/voice.js').VoiceLayer | null = null;
+  readonly agents!: AgentBotProvider;
+  readonly context7!: Context7Broker;
 
   constructor(private runtimeDir: string, private orchestrator: Orchestrator, settings?: Partial<JarvisSettings>) {
     this.store = orchestrator.taskStore;
@@ -103,6 +108,12 @@ export class JarvisServer {
     this.privilege = new PrivilegeBroker(this.store, this.approvals);
     this.audit = new AuditLog(path.join(runtimeDir, 'security-audit.jsonl'));
     this.audit.append({ timestamp: new Date().toISOString(), kind: 'security', taskId: null, summary: 'JARVIS core started; security subsystem initialized' });
+    // Multi-agent system: specialist bot roster + shared Context7 broker
+    this.agents = new AgentBotProvider(this.store, process.env.JARVIS_AGENTS_DIR || path.join(os.homedir(), 'Desktop', 'agency-agents'), this.settings.opencodeBin);
+    this.orchestrator.agentProvider = this.agents; // post-verification bot review
+    this.context7 = new Context7Broker(path.join(runtimeDir, 'context7-cache'), {}, (e) => {
+      this.store.bus.emit('event', { timestamp: new Date().toISOString(), task_id: 'TASK-NONE', component: 'context7', event: 'query', severity: 'info', data: e });
+    });
   }
 
   private settingsPath() { return path.join(this.runtimeDir, 'settings.json'); }
@@ -463,6 +474,45 @@ export class JarvisServer {
         if (req.method === 'POST' && p === '/api/voice/listen-stop') {
           this.voice.stopListenLoop();
           return void json({ listening: false });
+        }
+      }
+
+      // Multi-agent system: bot roster, assignments, bounded bot tasks, Context7 broker
+      if (p === '/api/bots' || p.startsWith('/api/bots/') || p === '/api/context7') {
+        if (req.method === 'GET' && p === '/api/bots') {
+          return void json({ rosterSize: this.agents.rosterSize(), activeBots: this.agents.activeBots(), history: this.agents.assignmentHistory().slice(-50), context7: this.context7.stats() });
+        }
+        const botMatch = p.match(/^\/api\/bots\/([^/]+)\/(.+)$/);
+        if (req.method === 'POST' && botMatch) {
+          const botId = decodeURIComponent(botMatch[1]);
+          const bot = this.agents.getBot(botId);
+          if (!bot) return void json({ error: `bot not found: ${botId}` }, 404);
+          if ((body as { taskId?: string }).taskId && this.emergencyStopped) return void json({ error: 'JARVIS is in EMERGENCY STOP' }, 500);
+          try {
+            const r = await this.agents.runBotTask(
+              bot,
+              String((body as { taskId?: string }).taskId ?? 'TASK-NONE'),
+              String((body as { phase?: string }).phase ?? 'manual'),
+              String((body as { task?: string }).task ?? ''),
+              sanitize(String((body as { context?: string }).context ?? '')),
+            );
+            return void json(r);
+          } catch (e) {
+            return void json({ ok: false, analysis: String(e instanceof Error ? e.message : e) }, 400);
+          }
+        }
+        if (req.method === 'POST' && p === '/api/context7') {
+          const b = body as Partial<import('./agents/context7-broker.js').Context7Request> & { agent?: string };
+          const r = await this.context7.request({
+            kind: (b.kind as 'resolve' | 'docs') ?? 'resolve',
+            libraryName: b.libraryName,
+            libraryId: b.libraryId,
+            query: b.query,
+            version: b.version,
+            language: b.language,
+            priority: (b.priority as 'blocking' | 'test' | 'research') ?? 'research',
+          }, b.agent ?? 'owner');
+          return void json(r);
         }
       }
 

@@ -8,7 +8,8 @@ import { OpenCodeController } from './opencode/controller.js';
 import { Supervisor, formatIncident } from './supervisor/supervisor.js';
 import { sanitizeTruncated, sanitize } from './security/sanitize.js';
 import { annotateInjections, scanForInjections } from './security/injection.js';
-import { Verifier, type SoftwareVerificationSpec } from './verifier/verifier.js';
+import { Verifier, type SoftwareVerificationSpec, type VerificationReport } from './verifier/verifier.js';
+import { PHASE_BOT_ROUTING, type AgentBotProvider } from './agents/provider.js';
 
 export interface OrchestratorOptions {
   runtimeDir: string;
@@ -43,6 +44,8 @@ export class Orchestrator {
   private running = false;
   private cancelRequested = false;
   private pauseRequested = false;
+  /** Set by the server: enables the post-verification reality-check bot review. */
+  agentProvider: AgentBotProvider | null = null;
 
   constructor(private opts: OrchestratorOptions) {
     this.store = new TaskStore(opts.runtimeDir);
@@ -250,6 +253,7 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
           task.result = 'Verified: ' + report.steps.map((s) => `✔ ${s.name}`).join('; ');
           await this.store.transition(task, 'COMPLETED');
           await this.store.emit(task, 'verifier', 'task_completed', 'info');
+          await this.reviewWithBot(task, report, dir);
           return;
         }
         // verification failed → treat as failure, feed into correction loop
@@ -300,6 +304,31 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
 
       // consult_chatgpt
       currentPrompt = await this.consultChatGPT(task, verdict.incident);
+    }
+  }
+
+  /** Advisory reality-check: one bounded bot task after verification passes.
+   *  Never fails the task and never throws — disabled via JARVIS_BOT_REVIEW=off. */
+  private async reviewWithBot(task: Task, report: VerificationReport, dir: string): Promise<void> {
+    if (!this.agentProvider || process.env.JARVIS_BOT_REVIEW === 'off') return;
+    const botId = PHASE_BOT_ROUTING['final-verification'] ?? 'testing/reality-checker';
+    const bot = this.agentProvider.getBot(botId);
+    if (!bot) { await this.store.emit(task, 'computer', 'bot.review_skipped', 'warning', { bot: botId, reason: 'bot missing' }).catch(() => {}); return; }
+    try {
+      const context = [
+        `Owner request: ${task.owner_request.slice(0, 800)}`,
+        `Verification: ${report.steps.map((s) => `${s.name}=${s.ok ? 'pass' : 'fail'}`).join('; ')}`,
+        `Claim: ${task.result ?? 'task completed'}`,
+      ].join('\n');
+      const r = await this.agentProvider.runBotTask(
+        bot, task.id, 'final-verification',
+        'Adversarial reality check of this completed task: is the claim credible? List any unverified assumptions.',
+        sanitize(context), 180_000,
+      );
+      await writeFile(path.join(dir, 'bot-review.json'), JSON.stringify({ bot: botId, ok: r.ok, analysis: r.analysis }, null, 2));
+      await this.store.emit(task, 'computer', r.ok ? 'bot.review_completed' : 'bot.review_skipped', r.ok ? 'info' : 'warning', { bot: botId, chars: r.analysis.length }).catch(() => {});
+    } catch (e) {
+      await this.store.emit(task, 'computer', 'bot.review_skipped', 'warning', { bot: botId, reason: String(e).slice(0, 200) }).catch(() => {});
     }
   }
 

@@ -5,6 +5,7 @@
  *  Run: npx tsx tests/manual/m8-crash-recovery.mts  (core server running)
  */
 import { execFileSync, spawn } from 'node:child_process';
+import * as assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

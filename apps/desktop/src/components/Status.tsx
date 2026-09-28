@@ -63,12 +63,19 @@ export function humanEvent(e: import('../types').TaskEvent): string {
     escalated_to_owner: 'Waiting for owner decision',
     'computer.action.denied': 'Action refused by security policy',
     'computer.action.dry_run': 'Dry run (no changes)',
+    'bot.assigned': 'Bot assigned',
+    'bot.task_started': 'Bot task started',
+    'bot.completed': 'Bot task completed',
+    'bot.failed': 'Bot task failed',
+    'bot.review_completed': 'Bot reality review done',
+    'bot.review_skipped': 'Bot review skipped',
   };
   if (map[e.event]) {
-    const d = e.data as { attempt?: number; cycle?: number; killed?: number } | undefined;
+    const d = e.data as { attempt?: number; cycle?: number; killed?: number; bot?: string } | undefined;
     if (e.event === 'self_repair_attempt' && d?.attempt) return `${map[e.event]} ${d.attempt}/2`;
     if (e.event === 'consulting_chatgpt_for_debug' && d?.cycle) return `${map[e.event]} (cycle ${d.cycle})`;
     if (e.event === 'computer_processes_killed' && d?.killed) return `${map[e.event]} (${d.killed})`;
+    if (e.event.startsWith('bot.') && d?.bot) return `${map[e.event]} — ${d.bot}`;
     return map[e.event];
   }
   // computer control actions: computer.<capability>.<operation>.started/completed

@@ -17,3 +17,5 @@ dist-core/
 runtime/*.jsonl
 runtime/settings.json
 runtime/auth-token
+runtime/context7-cache/
+runtime/*.log
