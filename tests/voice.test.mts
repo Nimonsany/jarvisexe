@@ -2,6 +2,14 @@
  * Milestone 5 voice tests: wake word detection, language routing, TTS, and a
  * REAL transcribe test (say-generated audio → whisper.cpp → text).
  * Run: npx tsx tests/voice.test.mts
+ *
+ * whisper-cli note: transcribe steps hit voice.ts's 300s timeout unless the
+ * binary is fast — brew's whisper.cpp bottle is SSE-only (~5-10x slower). This
+ * machine uses an AVX2 CPU-only build at ~/.jarvis/bin/whisper-cli symlinked
+ * from /usr/local/bin (rebuild: whisper.cpp v1.9.4, cmake -DGGML_METAL=OFF —
+ * METAL=ON yields garbage/empty output on Intel). `brew upgrade whisper.cpp`
+ * re-links the slow bottle; re-apply the symlink after brew upgrades. Also
+ * load-sensitive: passes when 1-min load ≲ 60 (2-core machine).
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
