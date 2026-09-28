@@ -27,7 +27,9 @@ export class OpenCodeController {
 
   start(projectDir: string, prompt: string, onEvent: (line: string) => void): OpenCodeSession {
     const session_id = randomUUID();
-    const proc = spawn(this.bin, ['run', prompt], {
+    // --auto: non-interactive runs auto-reject external_directory permissions otherwise,
+    // which breaks tasks in project dirs outside the opencode workspace.
+    const proc = spawn(this.bin, ['run', '--auto', prompt], {
       cwd: projectDir,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],

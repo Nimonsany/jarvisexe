@@ -48,10 +48,18 @@ export class Verifier {
         name: `test:${cmd}`,
         run: () =>
           new Promise((resolve) => {
-            // run via shell -c is intentional but command comes from ChatGPT-approved plan;
-            // restrict to safe characters as a baseline guard.
-            if (/[;&|`$(){}\[\]<>]/.test(cmd.replace(/&&/g, '').replace(/\|\|/g, ''))) {
-              return resolve({ ok: false, detail: 'test command rejected by safety filter' });
+            // ChatGPT plans legitimately need shell syntax (grep classes, $(...),
+            // && chains); opencode already has in-project shell, so blocking chars
+            // here only broke verification. Timeout + cwd are the real bounds.
+            const direct = cmd.match(/^(node|nodejs|python3|python)\s+(-e|-c)\s+"([\s\S]*)"$/);
+            if (direct) {
+              const p = spawn(direct[1], [direct[2], direct[3]], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
+              let out = '';
+              p.stdout?.on('data', (c) => (out += c));
+              p.stderr?.on('data', (c) => (out += c));
+              p.on('exit', (code) => resolve({ ok: code === 0, detail: out.slice(-1000) || `exit ${code}` }));
+              p.on('error', (e) => resolve({ ok: false, detail: String(e) }));
+              return;
             }
             const p = spawn('sh', ['-c', cmd], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
             let out = '';

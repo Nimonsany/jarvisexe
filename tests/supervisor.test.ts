@@ -39,3 +39,15 @@ test('failure → self_repair twice, then consult_chatgpt, then give_up after ma
   const v4 = s2.decide(t2, failureOut, 1);
   assert.equal(v4.kind, 'give_up');
 });
+
+test('conversational meta-talk about errors (exit 0) is not a failure', () => {
+  const s = new Supervisor();
+  const ramble = [
+    'Honest report: there is no earlier output or failure in this session.',
+    'I cannot diagnose an error I never produced.',
+    'If a run failed, paste the error text or tell me which command to run.',
+  ];
+  assert.equal(s.decide(fakeTask(), ramble, 0).kind, 'ok');
+  // hard artifacts with exit 0 still fail
+  assert.equal(s.decide(fakeTask(), ['All good', 'Error: module not found: x'], 0).kind, 'self_repair');
+});

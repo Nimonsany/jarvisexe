@@ -39,7 +39,11 @@ export class Supervisor {
     if (
       /all .*tests? (pass|passed)|passed,\s*0 failed|\b\d+(?:\/\d+)?\s*(?:tests?\s*)?(pass|passed)\b|\bpass(ed)?\b.*\b0 failed\b/i.test(tail)
     ) return false;
-    return tail.split('\n').some((l) => ERROR_HINTS.test(l));
+    // Hard error artifacts only: bare words like "error"/"failure" appear in
+    // conversational meta-talk ("there is no error to diagnose") and must NOT
+    // trigger repair loops.
+    return /error:|error ts\d+|error \d|npm err|traceback|exit code [1-9]|assertion\s*failed|assertionerror|command not found|permission denied|no such file|\b\d+\s+failed\b|tests? failed|\bfailed:|auto-rejecting|segmentation fault|✗/i.test(tail)
+      || /\bFAILED\b/.test(tail);
   }
 
   /**
