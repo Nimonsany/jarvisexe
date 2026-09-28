@@ -8,3 +8,12 @@ runtime/browser-profile/
 .env
 *.local
 .DS_Store
+
+# Rust build artifacts + core runtime build output
+apps/desktop/src-tauri/target/
+dist-core/
+
+# runtime state files (local-only, never in git)
+runtime/*.jsonl
+runtime/settings.json
+runtime/auth-token
