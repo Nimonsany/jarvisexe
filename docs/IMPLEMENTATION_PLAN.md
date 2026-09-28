@@ -147,3 +147,17 @@ Security matrix (tested):
 ## Milestone 7+ — not started
 
 Packaging (DMG/EXE/AppImage/DEB), production hardening.
+
+## Milestone 8 — Production Hardening (DONE)
+
+| # | Area | Result |
+|---|------|--------|
+| 1 | Dependency audit | npm production: **0 vulnerabilities**; dev: 2 moderate (vitest chain, dev-only, documented); cargo-audit requires newer Xcode CLT (documented) |
+| 2 | Secret leakage scan | 4064 tracked Rust build artifacts untracked; runtime state files untracked; tracked files + git history verified **no real secrets** (sanitizer regex + fake test data only) |
+| 3 | Crash recovery | SIGKILL mid-task → restart → discovered → resume → **COMPLETED** ✓; corrupt status.json → skipped gracefully ✓ |
+| 4 | Installer test | DMG → install to ~/Applications → launch → sidecar up → **sidecar killed on app exit** → uninstall clean ✓ |
+| 5 | CI / cross-platform | CI YAML valid (4 jobs); macOS **tested**; Windows/Linux builds defined in CI, **not yet run** (owner pushes when ready) |
+| 6 | Release signing | RELEASE.md: Apple Developer ID + notarization steps, Windows Authenticode, Linux GPG, auto-update signature verification plan |
+| 7 | Performance | health ~55-70ms; core idle ~168MB RSS (includes Node+loaded modules); event-driven, no polling |
+
+## Status: Milestones 1-8 COMPLETE

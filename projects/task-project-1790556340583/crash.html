@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>M8 Crash Recovery Test</title>
+</head>
+<body>
+  <h1 id="status">M8 Crash Recovery Test</h1>
+
+  <button id="crash-button" type="button">
+    Run Recovery Test
+  </button>
+
+  <script>
+    document.getElementById('crash-button').addEventListener('click', () => {
+      document.getElementById('status').textContent =
+        'M8_CRASH_RECOVERY_OK';
+    });
+  </script>
+</body>
+</html>
