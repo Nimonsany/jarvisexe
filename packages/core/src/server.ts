@@ -16,6 +16,8 @@ import { PrivilegeBroker } from './security/privilege.js';
 import { AuditLog } from './security/audit.js';
 import { AgentBotProvider } from './agents/provider.js';
 import { Context7Broker } from './agents/context7-broker.js';
+import { discoverOpencode, opencodeCandidates } from './opencode/discover.js';
+import { collectResources, collectVoice } from './preflight.js';
 
 function repoDistDir(): string {
   // apps/desktop/dist relative to this file: packages/core/src/server.* → ../../../apps/desktop/dist
@@ -63,6 +65,22 @@ export interface Health {
   chatgptProfile: 'ready' | 'missing';
   chatgptLogin: 'ok' | 'required' | 'unknown' | 'checking';
   storage: 'ready' | 'error';
+  voice: 'ready' | 'missing';
+}
+
+/** Build manifest written by scripts/release/gen-manifest.mts and bundled as
+ *  core-runtime/build-manifest.json (fallback: dev tree dist-core/…). */
+export function readBuildManifest(): { version: string; commit: string; dirty: boolean; builtAt: string; arch: string; channel: string } {
+  const argv1 = process.argv[1] ? path.dirname(process.argv[1]) : '';
+  const candidates = [
+    process.env.JARVIS_BUILD_MANIFEST || '',
+    argv1 ? path.join(argv1, 'build-manifest.json') : '',
+    path.join(process.cwd(), 'dist-core', 'build-manifest.json'),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { return JSON.parse(readFileSync(c, 'utf8')); } catch { /* try next */ }
+  }
+  return { version: '0.1.0-dev', commit: 'dev', dirty: false, builtAt: new Date(0).toISOString(), arch: process.arch, channel: 'dev' };
 }
 
 export class JarvisServer {
@@ -109,7 +127,7 @@ export class JarvisServer {
     this.audit = new AuditLog(path.join(runtimeDir, 'security-audit.jsonl'));
     this.audit.append({ timestamp: new Date().toISOString(), kind: 'security', taskId: null, summary: 'JARVIS core started; security subsystem initialized' });
     // Multi-agent system: specialist bot roster + shared Context7 broker
-    this.agents = new AgentBotProvider(this.store, process.env.JARVIS_AGENTS_DIR || path.join(os.homedir(), 'Desktop', 'agency-agents'), this.settings.opencodeBin);
+    this.agents = new AgentBotProvider(this.store, process.env.JARVIS_AGENTS_DIR || path.join(os.homedir(), 'Desktop', 'agency-agents'), this.opencodeBin());
     this.orchestrator.agentProvider = this.agents; // post-verification bot review
     this.context7 = new Context7Broker(path.join(runtimeDir, 'context7-cache'), {}, (e) => {
       this.store.bus.emit('event', { timestamp: new Date().toISOString(), task_id: 'TASK-NONE', component: 'context7', event: 'query', severity: 'info', data: e });
@@ -199,17 +217,91 @@ export class JarvisServer {
       chatgptProfile: existsSync(defaultProfileDir(this.runtimeDir)) ? 'ready' : 'missing',
       chatgptLogin: this.loginState,
       storage: existsSync(this.runtimeDir) ? 'ready' : 'error',
+      voice: await this.checkVoice(),
     };
     this.healthCache = { data, at: Date.now() };
     return data;
   }
 
+  private opencodeBin(): string {
+    // FR-5: configured → bundled → user-local → PATH; falls back to the raw setting
+    return discoverOpencode({ configured: this.settings.opencodeBin })?.path ?? this.settings.opencodeBin;
+  }
+
+  /** FR-6/7: dependency + environment preflight (local GET, no token). */
+  async preflight() {
+    const opts = { configured: this.settings.opencodeBin };
+    const hit = discoverOpencode(opts);
+    return {
+      opencode: hit
+        ? { status: await this.checkOpencode(), path: hit.path, source: hit.source, searched: opencodeCandidates(opts).map((c) => c.path) }
+        : { status: 'missing' as const, path: null, source: null, searched: opencodeCandidates(opts).map((c) => c.path) },
+      voice: collectVoice(),
+      resources: await collectResources(),
+    };
+  }
+
+  /** FR-12 boot recovery: mark interrupted tasks PAUSED (with an event) and kill
+   *  orphaned OpenCode children left by a crashed core. Nothing is replayed — the
+   *  user inspects and resumes. Orphan kill is double-scoped (task project dir AND a
+   *  runtime-owned root) so a foreign opencode process is never touched. */
+  async recoverInterrupted(): Promise<{ id: string; from: string }[]> {
+    const roots = [path.resolve(this.runtimeDir, '..', 'projects'), process.env.JARVIS_ORPHAN_ROOT].filter(Boolean) as string[];
+    const out: { id: string; from: string }[] = [];
+    for (const t of await this.store.listIncomplete()) {
+      if (t.status === 'PAUSED' || t.status === 'WAITING_FOR_OWNER') continue; // already safe / awaiting the owner
+      this.killOrphans(t.project_directory, roots);
+      const from = t.status;
+      try {
+        await this.store.transition(t, 'PAUSED');
+        await this.store.emit(t, 'core', 'recovery_interrupted', 'warning', { previous_status: from });
+        out.push({ id: t.id, from });
+      } catch { /* illegal edge — task stays listed; user can still cancel */ }
+    }
+    return out;
+  }
+
+  private killOrphans(projectDir: string, roots: string[]): void {
+    if (!projectDir || roots.length === 0) return;
+    const inScope = (cwd: string) => roots.some((r) => cwd === r || cwd.startsWith(r + '/'));
+    let pids: string[];
+    // matches OpenCode and the ChatGPT browser stack; cwd+root scoping below
+    // guarantees only children of this task's own workspace are ever killed
+    try { pids = execFileSync('pgrep', ['-f', 'opencode|Chromium|headless_shell|playwright'], { encoding: 'utf8' }).split('\n').filter(Boolean); } catch { return; }
+    for (const pid of pids) {
+      if (Number(pid) === process.pid) continue;
+      try {
+        const out = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+        const cwd = out.split('\n').find((l) => l.startsWith('n'))?.slice(1);
+        if (cwd && (cwd === projectDir || cwd.startsWith(projectDir + '/')) && inScope(cwd)) {
+          process.kill(Number(pid), 'SIGKILL');
+        }
+      } catch { /* process gone or inaccessible */ }
+    }
+  }
+
   private checkOpencode(): Promise<Health['opencode']> {
     return new Promise((resolve) => {
-      const p = spawn(this.settings.opencodeBin, ['--version'], { stdio: 'ignore' });
+      const p = spawn(this.opencodeBin(), ['--version'], { stdio: 'ignore' });
       p.on('error', () => resolve('missing'));
       p.on('exit', (code) => resolve(code === 0 ? 'ready' : 'missing'));
     });
+  }
+
+  /** Voice preflight (FR-4/6): whisper binary + model present. Bounded probes —
+   *  health must never hang. */
+  private async checkVoice(): Promise<Health['voice']> {
+    try {
+      const { VoiceLayer } = await import('./voice/voice.js');
+      this.voice ??= new VoiceLayer();
+      if (!this.voice.modelReady()) return 'missing';
+      return await new Promise<Health['voice']>((resolve) => {
+        const p = spawn('whisper-cli', ['--version'], { stdio: 'ignore' });
+        const timer = setTimeout(() => { p.kill('SIGKILL'); resolve('missing'); }, 10_000);
+        p.on('error', () => { clearTimeout(timer); resolve('missing'); });
+        p.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 ? 'ready' : 'missing'); });
+      });
+    } catch { return 'missing'; }
   }
 
   async createTask(request: string, project?: string): Promise<Task> {
@@ -333,7 +425,9 @@ export class JarvisServer {
       }
 
       if (req.method === 'GET' && p === '/api/bootstrap') return void json({ token: this.token });
-      if (req.method === 'GET' && p === '/api/health') return void json(await this.health());
+      if (req.method === 'GET' && (p === '/api/health' || p === '/health')) return void json(await this.health());
+      if (req.method === 'GET' && p === '/api/version') return void json(readBuildManifest());
+      if (req.method === 'GET' && p === '/api/preflight') return void json(await this.preflight());
       if (req.method === 'GET' && p === '/api/tasks') return void json(await this.store.listAll());
       if (req.method === 'GET' && p === '/api/settings') return void json(await this.getSettings());
       if (req.method === 'POST' && p === '/api/settings') return void json(await this.updateSettings(body as Partial<JarvisSettings>));

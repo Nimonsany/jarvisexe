@@ -15,6 +15,10 @@ import opencodeRules from '../../../../prompts/opencode-master.md';
 
 const PORT = Number(process.env.JARVIS_PORT || 7788);
 
+// a rejected background promise (task cleanup, browser close, session kill) must
+// never take down the core — node would otherwise exit and orphan running tasks
+process.on('unhandledRejection', (e) => console.error('[core] unhandledRejection (kept alive):', e));
+
 // runtime dir: ~/.jarvis/runtime (writable even from a read-only DMG mount);
 // JARVIS_RUNTIME_DIR overrides (dev uses the repo's runtime/)
 const runtimeDir = process.env.JARVIS_RUNTIME_DIR || resolve(os.homedir(), '.jarvis', 'runtime');
@@ -29,6 +33,8 @@ async function main() {
     headless: process.env.JARVIS_HEADLESS === 'true',
   });
   const server = new JarvisServer(runtimeDir, orchestrator);
+  const recovered = await server.recoverInterrupted();
+  if (recovered.length) console.log(`recovery: marked ${recovered.length} interrupted task(s) PAUSED`);
   await server.listen(PORT, '127.0.0.1');
   console.log(`JARVIS core listening on http://127.0.0.1:${PORT}`);
 }

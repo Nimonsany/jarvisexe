@@ -28,19 +28,27 @@ JARVIS.app launch
 
 ```bash
 npm install
-npx tsx packages/core/scripts/build-core-runtime.mts   # core runtime + sidecar
-cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-apple-darwin"
-cd apps/desktop/src-tauri && npx tauri build           # app + dmg
+bash scripts/release/build-dmg.sh    # manifest → core bundle → .app → hdiutil DMG + .sha256
+bash scripts/release/verify-dmg.sh   # mount + layout + manifest freshness + secret-filename scan
 ```
 
-Tauri's own DMG step (`bundle_dmg.sh`) can hang on Finder automation permissions;
-fall back to a plain `hdiutil` DMG:
+`build-dmg.sh` embeds `dist-core/build-manifest.json` (version / git SHA / builtAt / arch /
+channel) as `JARVIS.app/Contents/Resources/core-runtime/build-manifest.json`; `verify-dmg.sh`
+fails if it is stale vs the working tree. Tauri's `bundle.targets` is `["app"]` on purpose —
+its DMG step (`bundle_dmg.sh`) hangs on Finder automation permissions, so the script owns DMG
+creation via a plain foreground `hdiutil create`.
+
+## Release hardening (M7)
 
 ```bash
-cd target/release/bundle
-mkdir -p dmg-staging && cp -R macos/JARVIS.app dmg-staging/ && ln -s /Applications dmg-staging/Applications
-hdiutil create -volname "JARVIS" -srcfolder dmg-staging -ov -format UDZO dmg/JARVIS_0.1.0_x64.dmg
+npm run test:m7   # clean-install E2E: DMG → install → first launch → smoke → pause/resume →
+                  # cancel → kill/restart recovery → relaunch → reinstall → uninstall → cleanup
 ```
+
+Runs against a disposable `/tmp/jarvis-m7-*` root on port **7789** (the dev server on 7788
+stays untouched), writes `m7-report.json`, and prints `READY_FOR_V0.1.0_RC: YES|NO`.
+`scripts/release/m7-clean-install.sh` (`install|launch|launch-core|health|stop|reinstall|uninstall|status`)
+and `scripts/release/m7-cleanup.sh` are also usable standalone.
 
 ## CI (GitHub Actions)
 
@@ -62,6 +70,6 @@ The repo is never pushed automatically — the owner controls the remote.
 ## Requirements after install
 
 - Node.js 20+ (the sidecar launcher locates it; a bundled Node runtime can replace this later)
-- OpenCode CLI on PATH
+- OpenCode CLI (discovery: configured → bundled → user-local → PATH; see `/api/preflight`)
 - Google Chrome (ChatGPT browser channel)
 - macOS: microphone permission (voice), Accessibility (keyboard/mouse fallback)

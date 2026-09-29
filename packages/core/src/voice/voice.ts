@@ -73,7 +73,9 @@ export class VoiceLayer {
   transcribe(wavPath: string): { text: string; language: string } {
     if (!existsSync(wavPath)) throw new Error(`audio not found: ${wavPath}`);
     if (!existsSync(this.modelPath)) throw new Error('whisper model not downloaded');
-    const out = execFileSync('whisper-cli', ['-m', this.modelPath, '-l', 'auto', '-nt', '-f', wavPath], { encoding: 'utf8', timeout: 300_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    // measured on the 2-core CPU-only build: a 3s clip takes 70–300s (ggml-small,
+    // no METAL) — -t 4 shaves ~1/3, 900s cap keeps the slowest case alive
+    const out = execFileSync('whisper-cli', ['-m', this.modelPath, '-l', 'auto', '-nt', '-t', '4', '-f', wavPath], { encoding: 'utf8', timeout: 900_000, stdio: ['ignore', 'pipe', 'pipe'] });
     const stderr = '';
     void stderr;
     // whisper-cli prints segments on stdout (-nt = no timestamps); take non-empty lines

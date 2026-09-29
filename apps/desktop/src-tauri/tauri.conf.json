@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,7 +38,8 @@
     ],
     "resources": {
       "../../../dist-core/server.js": "core-runtime/server.js",
-      "../../../dist-core/node_modules/": "core-runtime/node_modules/"
+      "../../../dist-core/node_modules/": "core-runtime/node_modules/",
+      "../../../dist-core/build-manifest.json": "core-runtime/build-manifest.json"
     }
   }
 }

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { discoverOpencode } from './discover.js';
 
 export interface OpenCodeSession {
   session_id: string;
@@ -15,7 +16,8 @@ export interface OpenCodeSession {
  * we keep per task and prepend context to follow-up prompts.
  */
 export class OpenCodeController {
-  constructor(private bin = process.env.OPENCODE_BIN || 'opencode') {}
+  // FR-5: env/configured → bundled → user-local → PATH (absolute path; no cwd binary)
+  constructor(private bin = discoverOpencode({ configured: process.env.OPENCODE_BIN })?.path ?? 'opencode') {}
 
   async detect(): Promise<boolean> {
     return new Promise((resolve) => {

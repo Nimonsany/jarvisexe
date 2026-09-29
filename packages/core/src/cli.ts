@@ -7,6 +7,9 @@ import { TaskStore } from './task/store.js';
 const repoRoot = resolve(new URL('../../../', import.meta.url).pathname);
 const runtimeDir = process.env.JARVIS_RUNTIME_DIR || resolve(repoRoot, 'runtime');
 
+// background promise rejections (task cleanup etc.) must not kill a live server
+process.on('unhandledRejection', (e) => console.error('[core] unhandledRejection (kept alive):', e));
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
 
@@ -31,8 +34,10 @@ async function main() {
       headless: process.env.JARVIS_HEADLESS === 'true',
     });
     const server = new JarvisServer(runtimeDir, orchestrator);
-    await server.listen(7788, '127.0.0.1');
-    console.log('JARVIS core API listening on http://127.0.0.1:7788');
+    const recovered = await server.recoverInterrupted();
+    if (recovered.length) console.log(`recovery: marked ${recovered.length} interrupted task(s) PAUSED — ${recovered.map((r) => `${r.id}(${r.from})`).join(', ')}`);
+    await server.listen(Number(process.env.JARVIS_PORT || 7788), '127.0.0.1');
+    console.log(`JARVIS core API listening on http://127.0.0.1:${process.env.JARVIS_PORT || 7788}`);
     console.log('Press Ctrl+C to stop.');
     return;
   }
