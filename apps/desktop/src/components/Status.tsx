@@ -5,7 +5,7 @@ const MARK = { done: '✓', active: '●', pending: '○', bad: '✗' } as const
 
 export function StatusPill({ status }: { status: TaskStatus }) {
   const d = STATUS_DISPLAY[status] ?? { label: status, mark: 'pending' as const };
-  return <span className={`pill ${d.mark}`}>{MARK[d.mark]} {d.label}</span>;
+  return <span className={`pill ${d.mark}`} data-testid="status-pill">{MARK[d.mark]} {d.label}</span>;
 }
 
 export function Pipeline({ task }: { task: Task | null }) {

@@ -32,7 +32,7 @@ export class ComputerController {
   private auditFile: string;
 
   constructor(private store: TaskStore, runtimeDir: string) {
-    this.registry = new ProcessRegistry();
+    this.registry = new ProcessRegistry(runtimeDir);
     this.policy = new SecurityPolicy(store);
     this.terminal = new TerminalController(this.registry);
     this.filesystem = new FilesystemController();

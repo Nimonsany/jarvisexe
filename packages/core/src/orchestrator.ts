@@ -10,6 +10,7 @@ import { sanitizeTruncated, sanitize } from './security/sanitize.js';
 import { annotateInjections, scanForInjections } from './security/injection.js';
 import { Verifier, type SoftwareVerificationSpec, type VerificationReport } from './verifier/verifier.js';
 import { PHASE_BOT_ROUTING, type AgentBotProvider } from './agents/provider.js';
+import type { ProcessRegistry } from './computer/registry.js';
 
 export interface OrchestratorOptions {
   runtimeDir: string;
@@ -46,6 +47,14 @@ export class Orchestrator {
   private pauseRequested = false;
   /** Set by the server: enables the post-verification reality-check bot review. */
   agentProvider: AgentBotProvider | null = null;
+
+  /** M8 ownership: the shared process registry (set by the server). All
+   *  task-spawned processes (opencode, verifier, browser tree) register here. */
+  attachRegistry(r: ProcessRegistry): void {
+    this.opencode.registry = r;
+    this.chatgpt.registry = r;
+    this.verifier.registry = r;
+  }
 
   constructor(private opts: OrchestratorOptions) {
     this.store = new TaskStore(opts.runtimeDir);
@@ -212,8 +221,8 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
       const onEvent = (line: string) => console.log(`  [opencode] ${line.slice(0, 300)}`);
       const fullPrompt = currentPrompt + dirConstraint; // constraint on EVERY session
       let session = task.opencode_session
-        ? this.opencode.continue(task.opencode_session, task.project_directory, fullPrompt, onEvent)
-        : this.opencode.start(task.project_directory, fullPrompt, onEvent);
+        ? this.opencode.continue(task.opencode_session, task.project_directory, fullPrompt, onEvent, task.id)
+        : this.opencode.start(task.project_directory, fullPrompt, onEvent, task.id);
       task.opencode_session = session.session_id;
       this.activeSession = session;
       await this.store.save(task);

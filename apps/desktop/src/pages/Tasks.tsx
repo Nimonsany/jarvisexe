@@ -5,7 +5,17 @@ import type { Task } from '../types';
 
 export function Tasks({ onOpen }: { onOpen: (id: string) => void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
-  useEffect(() => { JarvisClient.listTasks().then(setTasks).catch(() => {}); }, []);
+  useEffect(() => {
+    let alive = true;
+    const load = () => JarvisClient.listTasks()
+      .then((t) => { if (alive) setTasks(t); })
+      .catch(() => { /* transient — next tick retries */ });
+    load();
+    // ponytail: poll — a one-shot fetch that timed out left this page forever
+    // empty ("No tasks yet") under load; retry-on-reject + tick covers it.
+    const iv = setInterval(load, 2000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
   return (
     <div className="page">
       <h1>Tasks</h1>

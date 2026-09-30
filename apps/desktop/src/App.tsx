@@ -46,13 +46,23 @@ export default function App() {
             {label}
           </button>
         ))}
-        <div className="sidebar-footer">
-          <span className={`dot ${j.connected ? 'on' : 'off'}`} /> {j.connected ? 'Core online' : 'Core offline'}
+        <div className="sidebar-footer"
+          data-testid="core-state"
+          role="status"
+          title={j.coreError ?? undefined}>
+          <span className={`dot ${j.corePhase === 'ready' ? 'on' : 'off'}`} />
+          {j.corePhase === 'starting' && 'Starting Core…'}
+          {j.corePhase === 'connecting' && 'Connecting…'}
+          {j.corePhase === 'ready' && 'Ready'}
+          {j.corePhase === 'error' && <>
+            Error
+            <button onClick={j.retryCore} aria-label="Retry core connection">Retry</button>
+          </>}
         </div>
       </nav>
 
       <main className="main" aria-label="JARVIS content">
-        {view.page === 'dashboard' && <Dashboard j={j} />}
+        {view.page === 'dashboard' && <Dashboard j={j} onOpenDetail={(id) => nav({ page: 'task-detail', id })} />}
         {view.page === 'tasks' && <Tasks onOpen={(id) => nav({ page: 'task-detail', id })} />}
         {view.page === 'task-detail' && <TaskDetail id={view.id} onBack={() => nav({ page: 'tasks' })} />}
         {view.page === 'projects' && <Projects />}

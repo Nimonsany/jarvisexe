@@ -1,7 +1,19 @@
 import type { Task, TaskEvent, Health, Settings, ProjectInfo } from '../types';
 
-const BASE = 'http://127.0.0.1:7788';
+/** Core base URL — set once by endpoint discovery (coreEndpoint.ts handshake).
+ *  No hardcoded URL here: BLOCKER 1 moved endpoint ownership to the runtime. */
+let base: string | null = null;
 let authToken: string | null = null;
+
+export function setCoreBase(url: string): void {
+  base = url.replace(/\/+$/, '');
+  authToken = null;
+}
+
+function BASE(): string {
+  if (!base) throw new Error('CORE_ENDPOINT_UNRESOLVED');
+  return base;
+}
 
 /** Fetch the per-install token.
  *  - Local (allowlisted origin): from the bootstrap endpoint.
@@ -11,7 +23,7 @@ async function ensureToken(): Promise<string> {
   if (authToken) return authToken;
   const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('jarvis-device-token') : null;
   try {
-    const r = await fetch(`${BASE}/api/bootstrap`);
+    const r = await fetch(`${BASE()}/api/bootstrap`, { signal: AbortSignal.timeout(10_000) });
     if (r.ok) {
       authToken = ((await r.json()) as { token: string }).token;
       return authToken;
@@ -32,10 +44,13 @@ export function setDeviceToken(token: string): void {
 
 async function req<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const token = await ensureToken();
-  const r = await fetch(`${BASE}${path}`, {
+  const r = await fetch(`${BASE()}${path}`, {
     method,
     body: body ? JSON.stringify(body) : undefined,
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    // Abort hung sockets: a never-settling fetch left pages on "Loading…"
+    // forever under system load (WebKit network stalls at load 200+).
+    signal: AbortSignal.timeout(15_000),
   });
   if (!r.ok) {
     if (r.status === 401) authToken = null; // token rotated — refetch next call
@@ -67,7 +82,7 @@ export const JarvisClient = {
   getEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop'),
   clearEmergencyStop: () => req<{ stopped: boolean }>('/api/emergency-stop/clear', 'POST'),
   securityAudit: () => req<{ chain: { ok: boolean; entries: number }; entries: unknown[] }>('/api/security-audit'),
-  voiceStatus: () => req<{ whisper: boolean; model: boolean; mics: { index: number; name: string }[] }>('/api/voice/status'),
+  voiceStatus: () => req<{ whisper: boolean; model: boolean; engine: string | null; mode: 'metal' | 'cpu' | 'unknown'; mics: { index: number; name: string }[] }>('/api/voice/status'),
   pushToTalk: (durationMs = 8000, deviceIndex?: number) => req<{ text: string; language: string; command: string | null }>('/api/voice/push-to-talk', 'POST', { durationMs, deviceIndex }),
   speak: (text: string) => req<{ ok: boolean; voice: string }>('/api/voice/speak', 'POST', { text }),
 
@@ -78,11 +93,11 @@ export const JarvisClient = {
     let closed = false;
     void ensureToken().then((token) => {
       if (closed) return;
-      es = new EventSource(`${BASE}/api/events?token=${token}`);
+      es = new EventSource(`${BASE()}/api/events?token=${token}`);
       es.onmessage = (m) => {
         try { onEvent(JSON.parse(m.data) as TaskEvent); } catch { /* malformed event */ }
       };
-    });
+    }).catch(() => { /* core not ready yet — caller keeps polling */ });
     return () => { closed = true; es?.close(); };
   },
 };

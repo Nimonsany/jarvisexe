@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { JarvisClient } from '../services/JarvisClient';
+import { JarvisClient, setCoreBase } from '../services/JarvisClient';
+import { handshakeCore } from '../services/coreEndpoint';
 import type { Task, TaskEvent, Health, Settings } from '../types';
+
+export type CorePhase = 'starting' | 'connecting' | 'ready' | 'error';
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Frontend state mirror. Backend is authoritative: everything here is
  *  recoverable by reloading from the core. */
@@ -13,6 +17,11 @@ export function useJarvis() {
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const currentIdRef = useRef<string | null>(null);
+
+  // Startup state machine (deterministic): starting → connecting → ready | error
+  const [handshaken, setHandshaken] = useState(false);
+  const [coreError, setCoreError] = useState<string | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   const refreshCurrent = useCallback(async (id?: string | null) => {
     const target = id ?? currentIdRef.current;
@@ -32,15 +41,58 @@ export function useJarvis() {
       const active = list.find((t) => !['COMPLETED', 'CANCELLED', 'FAILED'].includes(t.status));
       if (active && !currentIdRef.current) currentIdRef.current = active.id;
       await refreshCurrent(currentIdRef.current ?? active?.id);
+      return true;
     } catch {
       setConnected(false);
+      return false;
     }
   }, [refreshCurrent]);
 
+  // BLOCKER 1 — endpoint discovery + identity handshake. Core boots alongside
+  // the window, so retry a missing core briefly; identity/endpoint failures are
+  // permanent (deterministic Error state, no silent fallback to a wrong URL).
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (let attempt = 1; attempt <= 40; attempt++) {
+        try {
+          const { base } = await handshakeCore();
+          if (cancelled) return;
+          setCoreBase(base);
+          setHandshaken(true);
+          return;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (cancelled) return;
+          if (msg === 'CORE_UNAVAILABLE' && attempt < 40) {
+            await sleep(500);
+            continue;
+          }
+          setCoreError(msg);
+          setHandshaken(false);
+          return;
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [retryToken]);
+
+  // Data load + event subscription only after a successful handshake.
+  useEffect(() => {
+    if (!handshaken) return;
+    let cancelled = false;
+    (async () => {
+      // first load may race the core's own warm-up — retry up to 60s
+      for (let i = 0; i < 60 && !cancelled; i++) {
+        const ok = await refreshAll();
+        if (cancelled) return;
+        if (ok) return;
+        await sleep(1000);
+      }
+      if (!cancelled) setCoreError('CORE_DATA_UNAVAILABLE');
+    })();
     JarvisClient.health().then(setHealth).catch(() => setHealth(null));
     JarvisClient.getSettings().then(setSettings).catch(() => {});
-    refreshAll();
     const unsub = JarvisClient.subscribeToEvents((e) => {
       setConnected(true);
       if (e.task_id === currentIdRef.current || !currentIdRef.current) {
@@ -59,8 +111,8 @@ export function useJarvis() {
     });
     const onVis = () => { if (document.visibilityState === 'visible') { refreshAll(); JarvisClient.health().then(setHealth).catch(() => {}); } };
     document.addEventListener('visibilitychange', onVis);
-    return () => { unsub(); document.removeEventListener('visibilitychange', onVis); };
-  }, [refreshAll, refreshCurrent]);
+    return () => { cancelled = true; unsub(); document.removeEventListener('visibilitychange', onVis); };
+  }, [handshaken, refreshAll, refreshCurrent]);
 
   const createTask = useCallback(async (request: string, project?: string) => {
     setBusy(true);
@@ -87,13 +139,14 @@ export function useJarvis() {
     } catch { /* core offline */ }
   }, [emergencyStopped]);
   useEffect(() => {
+    if (!handshaken) return;
     refreshApprovals();
     JarvisClient.getEmergencyStop().then((s) => setEmergencyStopped(s.stopped)).catch(() => {});
     const unsub = JarvisClient.subscribeToEvents((e) => {
       if (e.event.startsWith('approval.')) refreshApprovals();
     });
     return () => unsub();
-  }, [refreshApprovals]);
+  }, [handshaken, refreshApprovals]);
 
   const emergencyStop = useCallback(async () => {
     const r = await JarvisClient.emergencyStop();
@@ -107,8 +160,22 @@ export function useJarvis() {
     setEmergencyStopped(false);
   }, []);
 
+  const retryCore = useCallback(() => {
+    setCoreError(null);
+    setHandshaken(false);
+    setConnected(false);
+    setRetryToken((t) => t + 1);
+  }, []);
+
+  const corePhase: CorePhase =
+    coreError ? 'error'
+    : !handshaken ? 'starting'
+    : !connected ? 'connecting'
+    : 'ready';
+
   return {
     currentTask, tasks, events, health, settings, connected, busy,
+    corePhase, coreError, retryCore, coreReady: corePhase === 'ready',
     createTask, openTask, refreshAll, refreshCurrent, setSettings,
     openChatGPTLogin: () => { JarvisClient.openChatGPTLogin().catch(() => {}); },
     emergencyStop, clearEmergencyStop, emergencyStopped, approvals, refreshApprovals,

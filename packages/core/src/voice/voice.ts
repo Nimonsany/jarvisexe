@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { resolveWhisperBin } from '../preflight.js';
 
 /**
  * Voice layer (Milestone 5): wake word → record → speech-to-text (whisper.cpp,
@@ -15,6 +16,14 @@ import os from 'node:os';
  * - TTS: `say` — Devanagari text uses the hi_IN voice (Lekha) which reads the
  *   Devanagari script; other text uses the default English voice.
  * - macOS microphone permission: the OS prompts on the first recording.
+ * - Accelerator (M8-4): the binary is resolved once via resolveWhisperBin().
+ *   A Metal-enabled build was attempted on this machine and REJECTED: on the
+ *   Intel Iris GPU Metal either hangs at library init or takes ~87s for a 1s
+ *   clip vs ~30–37s CPU — so the installed ~/.jarvis/bin build is deliberately
+ *   CPU-only (BLAS), which is also what whisper.cpp falls back to whenever
+ *   Metal init fails. Mode is reported at /api/voice/status (engine/mode), and
+ *   the CPU baseline is 70–300s per 3s clip on this 4-core Intel — expected,
+ *   never a silent stall.
  */
 export class VoiceLayer {
   private modelPath: string;
@@ -30,9 +39,14 @@ export class VoiceLayer {
     return existsSync(this.modelPath);
   }
 
+  /** Resolved whisper binary — same resolution as preflight/mode reporting. */
+  private bin(): string {
+    return resolveWhisperBin().path ?? 'whisper-cli';
+  }
+
   whisperReady(): boolean {
     try {
-      execFileSync('whisper-cli', ['--version'], { stdio: 'ignore', timeout: 10000 });
+      execFileSync(this.bin(), ['--version'], { stdio: 'ignore', timeout: 10000 });
       return true;
     } catch { return false; }
   }
@@ -75,7 +89,7 @@ export class VoiceLayer {
     if (!existsSync(this.modelPath)) throw new Error('whisper model not downloaded');
     // measured on the 2-core CPU-only build: a 3s clip takes 70–300s (ggml-small,
     // no METAL) — -t 4 shaves ~1/3, 900s cap keeps the slowest case alive
-    const out = execFileSync('whisper-cli', ['-m', this.modelPath, '-l', 'auto', '-nt', '-t', '4', '-f', wavPath], { encoding: 'utf8', timeout: 900_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const out = execFileSync(this.bin(), ['-m', this.modelPath, '-l', 'auto', '-nt', '-t', '4', '-f', wavPath], { encoding: 'utf8', timeout: 900_000, stdio: ['ignore', 'pipe', 'pipe'] });
     const stderr = '';
     void stderr;
     // whisper-cli prints segments on stdout (-nt = no timestamps); take non-empty lines

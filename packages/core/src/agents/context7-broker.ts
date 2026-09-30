@@ -40,6 +40,8 @@ interface CacheEntry { data: unknown; at: number }
  * - Audit: every query (agent → key → cache-hit)
  */
 export class Context7Broker {
+  /** M8 ownership: set by the server — the MCP child is tracked like any owned process. */
+  registry: import('../computer/registry.js').ProcessRegistry | null = null;
   private l1 = new Map<string, CacheEntry>();
   private inflight = new Map<string, Promise<Context7Result>>();
   private queue: { req: Context7Request; key: string; resolve: (r: Context7Result) => void; enqueuedAt: number }[] = [];
@@ -185,6 +187,7 @@ export class Context7Broker {
   private startChild(): Promise<void> {
     return new Promise((resolve, reject) => {
       const proc = spawn('npx', ['-y', '@upstash/context7-mcp'], { stdio: ['pipe', 'pipe', 'ignore'] });
+      this.registry?.register('npx -y @upstash/context7-mcp', proc, { role: 'context7' });
       let buffer = '';
       proc.stdout!.on('data', (c) => {
         buffer += c.toString();

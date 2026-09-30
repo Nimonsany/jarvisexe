@@ -4,7 +4,7 @@ import { ApprovalRequests, EmergencyStopBar } from '../components/Security';
 import { JarvisClient } from '../services/JarvisClient';
 import type { useJarvis } from '../hooks/useJarvis';
 
-export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
+export function Dashboard({ j, onOpenDetail }: { j: ReturnType<typeof useJarvis>; onOpenDetail: (id: string) => void }) {
   return (
     <div className="page">
       <HealthBar health={j.health} onLogin={j.openChatGPTLogin} />
@@ -16,12 +16,14 @@ export function Dashboard({ j }: { j: ReturnType<typeof useJarvis> }) {
       <TaskInput
         onSubmit={(request, project) => j.createTask(request, project)}
         busy={j.busy}
+        ready={j.coreReady}
         onPushToTalk={() => JarvisClient.pushToTalk(8000).then((r) => r.command ?? r.text).catch((e) => { throw e; })}
       />
 
       <h2>Current Task</h2>
       <Pipeline task={j.currentTask} />
-      <CurrentTaskPanel task={j.currentTask} onPause={(id) => j.pause(id)} onStop={(id) => j.stop(id)} onOpenTask={j.openTask} />
+      <CurrentTaskPanel task={j.currentTask} onPause={(id) => j.pause(id)} onStop={(id) => j.stop(id)}
+        onOpenTask={(id) => { j.openTask(id); onOpenDetail(id); }} />
       <ErrorBanner task={j.currentTask} />
 
       <h2>Computer Activity</h2>

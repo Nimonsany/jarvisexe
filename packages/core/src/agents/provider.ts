@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { TaskStore } from '../task/store.js';
 import { emitComputerEvent } from '../computer/types.js';
@@ -53,19 +53,42 @@ export class AgentBotProvider {
 
   constructor(private store: TaskStore, private rosterDir: string, opencodeBin = 'opencode') {
     this.opencodeBin = opencodeBin;
-    this.loadRoster();
+    // Async + threadpool: a slow or blocked open() of the owner's roster dir must
+    // never stall the event loop before listen() (boot-gate hang, M7 T5).
+    void this.loadRoster();
   }
 
-  loadRoster(): number {
+  /**
+   * Loads the roster asynchronously (fs/promises → libuv threadpool).
+   * rosterSize() may be 0 for a moment after boot; bot consumers treat a
+   * missing bot as "review skipped" and never fail a task.
+   */
+  async loadRoster(): Promise<number> {
     this.bots.clear();
-    if (!existsSync(this.rosterDir)) return 0;
-    for (const division of readdirSync(this.rosterDir, { withFileTypes: true })) {
+    let divisions;
+    try {
+      divisions = await readdir(this.rosterDir, { withFileTypes: true });
+    } catch {
+      return 0; // missing/unreadable roster dir — degrade to empty
+    }
+    for (const division of divisions) {
       if (!division.isDirectory()) continue;
       const divDir = path.join(this.rosterDir, division.name);
-      for (const f of readdirSync(divDir)) {
+      let files: string[];
+      try {
+        files = await readdir(divDir);
+      } catch {
+        continue; // unreadable division — skip it
+      }
+      for (const f of files) {
         if (!f.endsWith('.md')) continue;
         const filePath = path.join(divDir, f);
-        const content = readFileSync(filePath, 'utf8');
+        let content: string;
+        try {
+          content = await readFile(filePath, 'utf8');
+        } catch {
+          continue; // unreadable persona — skip it
+        }
         const name = content.match(/^name:\s*(.+)$/m)?.[1]?.trim() ?? f.replace(/\.md$/, '');
         const vibe = content.match(/^vibe:\s*(.+)$/m)?.[1]?.trim() ?? '';
         const slug = f.replace(/\.md$/, '').replace(new RegExp(`^${division.name}-`), '');

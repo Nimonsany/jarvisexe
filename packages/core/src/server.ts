@@ -17,7 +17,7 @@ import { AuditLog } from './security/audit.js';
 import { AgentBotProvider } from './agents/provider.js';
 import { Context7Broker } from './agents/context7-broker.js';
 import { discoverOpencode, opencodeCandidates } from './opencode/discover.js';
-import { collectResources, collectVoice } from './preflight.js';
+import { collectResources, collectVoice, resolveWhisperBin } from './preflight.js';
 
 function repoDistDir(): string {
   // apps/desktop/dist relative to this file: packages/core/src/server.* → ../../../apps/desktop/dist
@@ -121,6 +121,7 @@ export class JarvisServer {
       writeFileSync(tokenFile, this.token, { mode: 0o600 });
     }
     this.computer = new ComputerController(this.store, runtimeDir);
+    this.orchestrator.attachRegistry?.(this.computer.registry); // M8: one ownership registry (fakes may not implement it)
     this.approvals = new ApprovalQueue(this.store);
     this.computer.approvalQueue = this.approvals;
     this.privilege = new PrivilegeBroker(this.store, this.approvals);
@@ -132,6 +133,7 @@ export class JarvisServer {
     this.context7 = new Context7Broker(path.join(runtimeDir, 'context7-cache'), {}, (e) => {
       this.store.bus.emit('event', { timestamp: new Date().toISOString(), task_id: 'TASK-NONE', component: 'context7', event: 'query', severity: 'info', data: e });
     });
+    this.context7.registry = this.computer.registry;
   }
 
   private settingsPath() { return path.join(this.runtimeDir, 'settings.json'); }
@@ -241,16 +243,16 @@ export class JarvisServer {
     };
   }
 
-  /** FR-12 boot recovery: mark interrupted tasks PAUSED (with an event) and kill
-   *  orphaned OpenCode children left by a crashed core. Nothing is replayed — the
-   *  user inspects and resumes. Orphan kill is double-scoped (task project dir AND a
-   *  runtime-owned root) so a foreign opencode process is never touched. */
+  /** Boot recovery (M8, FR-12): registry-driven. Kills only processes recorded by a
+   *  previous run whose live argv still matches the recorded identity — never a
+   *  fuzzy name/port scan — then pauses interrupted tasks (nothing is replayed) so
+   *  the owner inspects and resumes them. */
   async recoverInterrupted(): Promise<{ id: string; from: string }[]> {
-    const roots = [path.resolve(this.runtimeDir, '..', 'projects'), process.env.JARVIS_ORPHAN_ROOT].filter(Boolean) as string[];
+    const orphaned = this.computer.registry.recoverStale();
+    if (orphaned) console.log(`recovery: terminated ${orphaned} orphaned process(es) from a previous run (identity-verified)`);
     const out: { id: string; from: string }[] = [];
     for (const t of await this.store.listIncomplete()) {
       if (t.status === 'PAUSED' || t.status === 'WAITING_FOR_OWNER') continue; // already safe / awaiting the owner
-      this.killOrphans(t.project_directory, roots);
       const from = t.status;
       try {
         await this.store.transition(t, 'PAUSED');
@@ -259,25 +261,6 @@ export class JarvisServer {
       } catch { /* illegal edge — task stays listed; user can still cancel */ }
     }
     return out;
-  }
-
-  private killOrphans(projectDir: string, roots: string[]): void {
-    if (!projectDir || roots.length === 0) return;
-    const inScope = (cwd: string) => roots.some((r) => cwd === r || cwd.startsWith(r + '/'));
-    let pids: string[];
-    // matches OpenCode and the ChatGPT browser stack; cwd+root scoping below
-    // guarantees only children of this task's own workspace are ever killed
-    try { pids = execFileSync('pgrep', ['-f', 'opencode|Chromium|headless_shell|playwright'], { encoding: 'utf8' }).split('\n').filter(Boolean); } catch { return; }
-    for (const pid of pids) {
-      if (Number(pid) === process.pid) continue;
-      try {
-        const out = execFileSync('lsof', ['-a', '-p', pid, '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
-        const cwd = out.split('\n').find((l) => l.startsWith('n'))?.slice(1);
-        if (cwd && (cwd === projectDir || cwd.startsWith(projectDir + '/')) && inScope(cwd)) {
-          process.kill(Number(pid), 'SIGKILL');
-        }
-      } catch { /* process gone or inaccessible */ }
-    }
   }
 
   private checkOpencode(): Promise<Health['opencode']> {
@@ -296,7 +279,8 @@ export class JarvisServer {
       this.voice ??= new VoiceLayer();
       if (!this.voice.modelReady()) return 'missing';
       return await new Promise<Health['voice']>((resolve) => {
-        const p = spawn('whisper-cli', ['--version'], { stdio: 'ignore' });
+        // same resolved binary as preflight/transcription (M8-4)
+        const p = spawn(resolveWhisperBin().path ?? 'whisper-cli', ['--version'], { stdio: 'ignore' });
         const timer = setTimeout(() => { p.kill('SIGKILL'); resolve('missing'); }, 10_000);
         p.on('error', () => { clearTimeout(timer); resolve('missing'); });
         p.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 ? 'ready' : 'missing'); });
@@ -426,7 +410,8 @@ export class JarvisServer {
 
       if (req.method === 'GET' && p === '/api/bootstrap') return void json({ token: this.token });
       if (req.method === 'GET' && (p === '/api/health' || p === '/health')) return void json(await this.health());
-      if (req.method === 'GET' && p === '/api/version') return void json(readBuildManifest());
+      // identity marker: lets the desktop shell prove this port is JARVIS Core
+      if (req.method === 'GET' && p === '/api/version') return void json({ core: 'jarvis-core', protocol: 1, ...readBuildManifest() });
       if (req.method === 'GET' && p === '/api/preflight') return void json(await this.preflight());
       if (req.method === 'GET' && p === '/api/tasks') return void json(await this.store.listAll());
       if (req.method === 'GET' && p === '/api/settings') return void json(await this.getSettings());
@@ -530,7 +515,18 @@ export class JarvisServer {
         const { VoiceLayer } = await import('./voice/voice.js');
         this.voice ??= new VoiceLayer();
         if (req.method === 'GET' && p === '/api/voice/status') {
-          return void json({ whisper: this.voice.whisperReady(), model: this.voice.modelReady(), mics: this.voice.listMicDevices() });
+          // M8-4: readiness stays runtime-checked; engine/accelerator mode is
+          // link-level metadata about the same resolved binary.
+          const meta = collectVoice();
+          return void json({
+            whisper: this.voice.whisperReady(),
+            model: this.voice.modelReady(),
+            engine: meta.engine,
+            mode: meta.mode,
+            path: meta.path,
+            source: meta.source,
+            mics: this.voice.listMicDevices(),
+          });
         }
         if (req.method === 'POST' && p === '/api/voice/push-to-talk') {
           // records from the mic (OS prompts for permission on first use) → STT → command
@@ -641,6 +637,17 @@ export class JarvisServer {
         console.log('remoteAccess is on but no Tailscale IP detected — local only');
       }
     }
+    // M8: graceful shutdown — SIGTERM/SIGINT sweeps every owned child (live
+    // handles + identity-proven entries) before exit, so a stopped core never
+    // leaves an orphaned opencode/browser/verify process behind.
+    const shutdown = (sig: string) => {
+      let n = 0;
+      try { n = this.computer.stopAll(); } catch { /* best-effort */ }
+      console.error(`[core] ${sig}: stopped ${n} owned process(es), exiting`);
+      process.exit(0);
+    };
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
   }
 
   close(): Promise<void> {

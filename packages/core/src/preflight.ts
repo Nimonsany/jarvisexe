@@ -60,26 +60,52 @@ export interface VoicePreflight {
   path: string | null;
   source: 'jarvis-bin' | 'path' | null;
   model: 'ready' | 'missing';
+  engine: 'whisper.cpp' | null;
+  /** M8-4: accelerator the resolved binary actually links. 'metal' build still
+   *  falls back to CPU at runtime if Metal init fails — CPU is the guaranteed
+   *  baseline (3s clip ≈ 70–300s on this 2-core-class Intel without Metal). */
+  mode: 'metal' | 'cpu' | 'unknown';
 }
 
 function isExec(p: string): boolean {
   try { return path.isAbsolute(p) && statSync(p).isFile() && (accessSync(p, constants.X_OK) === undefined); } catch { return false; }
 }
 
+/** Link-level accelerator check: dylib-linked Metal builds reference
+ *  libggml-metal (verified on this machine's builds). The managed
+ *  ~/.jarvis/bin binary is the single install (PATH symlinks to it), so
+ *  otool coverage is complete here; CPU-only builds report 'cpu'. */
+function whisperMode(bin: string): VoicePreflight['mode'] {
+  try {
+    const out = execFileSync('otool', ['-L', bin], { encoding: 'utf8', timeout: 5000 });
+    return /libggml-metal|Metal\.framework/.test(out) ? 'metal' : 'cpu';
+  } catch { return 'unknown'; }
+}
+
+/** Single resolution point for the whisper binary (FR-6): prefers the local
+ *  ~/.jarvis/bin build, else PATH. Everything that spawns whisper-cli must use
+ *  this so readiness, mode reporting, and transcription run the SAME binary. */
+export function resolveWhisperBin(): { path: string | null; source: VoicePreflight['source'] } {
+  const preferred = path.join(os.homedir(), '.jarvis', 'bin', 'whisper-cli');
+  if (isExec(preferred)) return { path: preferred, source: 'jarvis-bin' };
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (dir && path.isAbsolute(dir) && isExec(path.join(dir, 'whisper-cli'))) return { path: path.join(dir, 'whisper-cli'), source: 'path' };
+  }
+  return { path: null, source: null };
+}
+
 /** FR-6: prefers the local ~/.jarvis/bin/whisper-cli build, else PATH. */
 export function collectVoice(): VoicePreflight {
-  const home = os.homedir();
-  const preferred = path.join(home, '.jarvis', 'bin', 'whisper-cli');
-  let resolved: string | null = null;
-  let source: VoicePreflight['source'] = null;
-  if (isExec(preferred)) { resolved = preferred; source = 'jarvis-bin'; }
-  else {
-    for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-      if (dir && path.isAbsolute(dir) && isExec(path.join(dir, 'whisper-cli'))) { resolved = path.join(dir, 'whisper-cli'); source = 'path'; break; }
-    }
-  }
+  const { path: resolved, source } = resolveWhisperBin();
   const model = existsModel() ? 'ready' : 'missing';
-  return { whisper: resolved ? 'ready' : 'missing', path: resolved, source, model };
+  return {
+    whisper: resolved ? 'ready' : 'missing',
+    path: resolved,
+    source,
+    model,
+    engine: resolved ? 'whisper.cpp' : null,
+    mode: resolved ? whisperMode(resolved) : 'unknown',
+  };
 }
 
 function existsModel(): boolean {

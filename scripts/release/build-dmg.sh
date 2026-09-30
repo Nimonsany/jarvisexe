@@ -28,6 +28,14 @@ cmp -s dist-core/build-manifest.json "$APP/Contents/Resources/core-runtime/build
 cmp -s "$BIN" "$APP/Contents/MacOS/jarvis-core" || { echo "BUILD_DMG_FAIL: embedded sidecar stale" >&2; exit 1; }
 cmp -s dist-core/server.js "$APP/Contents/Resources/core-runtime/server.js" || { echo "BUILD_DMG_FAIL: embedded server.js stale" >&2; exit 1; }
 
+# 4b. ad-hoc sign — unsigned apps get no stable TCC identity: every install
+#     re-prompts (Desktop/Documents/Downloads/…) and an unclicked prompt can
+#     freeze the requesting thread mid-run. A cdhash makes grants persist per
+#     build. No hardened runtime: the embedded node needs JIT and we are not
+#     notarizing.
+codesign --force --deep --sign - "$APP" || { echo "BUILD_DMG_FAIL: codesign failed" >&2; exit 1; }
+codesign --verify --strict "$APP" || { echo "BUILD_DMG_FAIL: codesign verify failed" >&2; exit 1; }
+
 # 5. dmg via hdiutil (foreground — background hdiutil dies without a tty)
 rm -f "$DMG" "$DMG.sha256"
 mkdir -p "$DMG_DIR"

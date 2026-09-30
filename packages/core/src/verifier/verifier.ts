@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { Task } from '../task/types.js';
+import type { ProcessRegistry } from '../computer/registry.js';
 
 export interface VerificationStep {
   name: string;
@@ -24,6 +25,9 @@ export interface SoftwareVerificationSpec {
 }
 
 export class Verifier {
+  /** M8 ownership: set by the orchestrator so verify steps are tracked + killable. */
+  registry: ProcessRegistry | null = null;
+
   async verifySoftware(task: Task, spec: SoftwareVerificationSpec): Promise<VerificationReport> {
     const steps: VerificationStep[] = [];
     const dir = task.project_directory;
@@ -54,6 +58,7 @@ export class Verifier {
             const direct = cmd.match(/^(node|nodejs|python3|python)\s+(-e|-c)\s+"([\s\S]*)"$/);
             if (direct) {
               const p = spawn(direct[1], [direct[2], direct[3]], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
+              this.registry?.register(cmd, p, { role: 'verify', taskId: task.id });
               let out = '';
               p.stdout?.on('data', (c) => (out += c));
               p.stderr?.on('data', (c) => (out += c));
@@ -62,6 +67,7 @@ export class Verifier {
               return;
             }
             const p = spawn('sh', ['-c', cmd], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
+            this.registry?.register(cmd, p, { role: 'verify', taskId: task.id });
             let out = '';
             p.stdout?.on('data', (c) => (out += c));
             p.stderr?.on('data', (c) => (out += c));

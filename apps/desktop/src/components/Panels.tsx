@@ -2,10 +2,11 @@ import { useState } from 'react';
 import type { Task } from '../types';
 import { StatusPill } from './Status';
 
-export function TaskInput({ onSubmit, busy, onPushToTalk }: {
+export function TaskInput({ onSubmit, busy, onPushToTalk, ready = true }: {
   onSubmit: (request: string, project?: string) => void;
   busy: boolean;
   onPushToTalk?: () => Promise<string | null>;
+  ready?: boolean;
 }) {
   const [value, setValue] = useState('');
   const [project, setProject] = useState('');
@@ -59,7 +60,7 @@ export function TaskInput({ onSubmit, busy, onPushToTalk }: {
         onChange={(e) => setProject(e.target.value)}
         aria-label="Project directory"
       />
-      <button className="primary" onClick={submit} disabled={busy || !value.trim()} aria-label="Execute task">
+      <button className="primary" onClick={submit} disabled={busy || !ready || !value.trim()} aria-label="Execute task">
         {busy ? 'Starting…' : 'Execute'}
       </button>
       <button className="mic" onClick={mic} disabled={busy || listening} aria-label="Push to talk (microphone)" title="Push to talk">

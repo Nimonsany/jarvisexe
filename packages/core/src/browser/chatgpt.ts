@@ -1,5 +1,7 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import type { ProcessRegistry } from '../computer/registry.js';
 
 const CHATGPT_URL = 'https://chatgpt.com/';
 // Prompt box: ChatGPT uses a contenteditable div#prompt-textarea (textarea historically).
@@ -12,18 +14,72 @@ const ASSISTANT_SELECTOR = '[data-content-search-unit-key*="assistant"], [data-c
 export class ChatGPTBrowser {
   private ctx: BrowserContext | null = null;
   private page: Page | null = null;
+  /** M8 ownership: set by the orchestrator — the browser tree is registered by
+   *  ppid provenance (new children of the core process) with live argv identity. */
+  registry: ProcessRegistry | null = null;
 
   constructor(private profileDir: string, private headless = false, private channel = 'chrome') {}
 
   async launch(): Promise<void> {
     if (this.ctx) return;
+    const before = this.directChildren();
     this.ctx = await chromium.launchPersistentContext(this.profileDir, {
       headless: this.headless,
       channel: this.channel,
       viewport: { width: 1280, height: 900 },
-      args: ['--disable-blink-features=AutomationControlled'],
+      // ponytail: fake mic/camera — chatgpt.com's voice UI must never trigger a
+      // macOS TCC Microphone prompt (subject = our app identity → blocks the GUI
+      // webview thread mid-task → e2e driver freeze). Drop if real-mic browser
+      // voice input is ever needed.
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--use-fake-ui-for-media-stream',
+        '--use-fake-device-for-media-stream',
+        '--mute-audio',
+      ],
     });
     this.page = this.ctx.pages()[0] ?? (await this.ctx.newPage());
+    this.registerBrowserTree(before);
+  }
+
+  /** Snapshot of our direct children (provenance baseline before a launch). */
+  private childrenMap(): Map<number, Set<number>> {
+    const m = new Map<number, Set<number>>();
+    try {
+      const out = execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const line of out.split('\n')) {
+        const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+        if (!pid || !ppid) continue;
+        if (!m.has(ppid)) m.set(ppid, new Set());
+        m.get(ppid)!.add(pid);
+      }
+    } catch { /* ps failed — no registration (never a fuzzy fallback) */ }
+    return m;
+  }
+
+  private directChildren(): Set<number> { return this.childrenMap().get(process.pid) ?? new Set(); }
+
+  /** Browser processes appear as a new subtree under us. Record each pid with
+   *  its live argv so boot recovery can identity-verify before any kill —
+   *  never a name-based match. */
+  private registerBrowserTree(before: Set<number>): void {
+    if (!this.registry) return;
+    const map = this.childrenMap();
+    const seen = new Set<number>();
+    const stack = [...(map.get(process.pid) ?? [])].filter((p) => !before.has(p));
+    while (stack.length) {
+      const pid = stack.pop()!;
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      for (const c of map.get(pid) ?? []) stack.push(c);
+    }
+    for (const pid of seen) {
+      try {
+        const args = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'args='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        const exe = execFileSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (args) this.registry.registerExternal({ pid, exe: exe || null, args, role: 'browser' });
+      } catch { /* process died during the snapshot */ }
+    }
   }
 
   async close(): Promise<void> {

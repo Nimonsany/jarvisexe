@@ -34,4 +34,6 @@ REQUIRED_FILES: <comma-separated list of files that must exist, relative to proj
 TEST_COMMAND: <single shell command that must exit 0, or NONE>
 HTTP_ENDPOINT: <URL that must return 2xx, or NONE>
 
+TEST_COMMAND rule: for exact-content or byte-count checks, make expected sizes self-computing inside the command (e.g. `test "$(wc -c < f)" -eq "$(printf %s 'EXPECTED' | wc -c)"`) — never hand-count and hardcode a byte number.
+
 Do not include or request private secrets.

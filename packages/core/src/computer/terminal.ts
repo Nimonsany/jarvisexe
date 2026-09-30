@@ -3,6 +3,13 @@ import { existsSync } from 'node:fs';
 import { ProcessRegistry } from './registry.js';
 import type { ActionResult } from './types.js';
 
+/** Cap output at ~4000 chars keeping BOTH ends (head proves cwd/early result,
+ *  tail holds errors) — a pure tail slice dropped the command's first output. */
+function cap4000(s: string): string {
+  if (s.length <= 4000) return s;
+  return `${s.slice(0, 2000)}\n…[${s.length - 4000} chars truncated]…\n${s.slice(-2000)}`;
+}
+
 export class TerminalController {
   constructor(private registry: ProcessRegistry) {}
 
@@ -22,7 +29,7 @@ export class TerminalController {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: args.background ? undefined : (args.timeoutMs ?? 120_000),
     });
-    const owned = this.registry.register(command, proc);
+    const owned = this.registry.register(command, proc, { role: 'terminal' });
     if (args.background) {
       return { success: true, tool: 'terminal', action: 'run', durationMs: Date.now() - t0, pid: owned.id, metadata: { background: true, cwd: cwd ?? process.cwd(), osPid: proc.pid ?? null } };
     }
@@ -38,8 +45,8 @@ export class TerminalController {
           action: 'run',
           durationMs: Date.now() - t0,
           exitCode: code ?? -1,
-          stdout: stdout.slice(-4000),
-          stderr: stderr.slice(-4000),
+          stdout: cap4000(stdout),
+          stderr: cap4000(stderr),
           pid: owned.id,
           metadata: { cwd: cwd ?? process.cwd(), signal: signal ?? undefined },
           ...(signal ? { error: `terminated by signal ${signal}` } : {}),

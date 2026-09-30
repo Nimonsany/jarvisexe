@@ -8,10 +8,15 @@ export function TaskDetail({ id, onBack }: { id: string; onBack: () => void }) {
   const [events, setEvents] = useState<TaskEvent[]>([]);
   useEffect(() => {
     let alive = true;
-    const load = () => JarvisClient.getTask(id).then(({ task, events }) => { if (alive) { setTask(task); setEvents(events); } }).catch(() => {});
+    const load = () => JarvisClient.getTask(id)
+      .then(({ task, events }) => { if (alive) { setTask(task); setEvents(events); } })
+      .catch(() => { /* transient failure — next tick retries */ });
     load();
+    // ponytail: poll + retry — one failed fetch (silent catch) or a missed SSE
+    // event used to leave this page on "Loading…"/stale UNVERIFIED forever.
+    const iv = setInterval(load, 2000);
     const unsub = JarvisClient.subscribeToEvents((e) => { if (e.task_id === id) load(); });
-    return () => { alive = false; unsub(); };
+    return () => { alive = false; clearInterval(iv); unsub(); };
   }, [id]);
 
   if (!task) return <div className="page"><p className="muted">Loading… or task not found.</p><button onClick={onBack}>Back</button></div>;
@@ -33,7 +38,7 @@ export function TaskDetail({ id, onBack }: { id: string; onBack: () => void }) {
             <dt>OpenCode session</dt><dd className="mono">{task.opencode_session ?? '—'}</dd>
             <dt>Self-repair attempts</dt><dd>{task.retry_count}</dd>
             <dt>ChatGPT cycles</dt><dd>{task.chatgpt_cycle_count}</dd>
-            <dt>Verification</dt><dd>{task.verification_status}</dd>
+            <dt>Verification</dt><dd data-testid="verification-status">{task.verification_status}</dd>
             <dt>Started</dt><dd>{task.created_at.replace('T', ' ').slice(0, 19)}</dd>
             <dt>Last update</dt><dd>{task.updated_at.replace('T', ' ').slice(0, 19)}</dd>
           </dl>

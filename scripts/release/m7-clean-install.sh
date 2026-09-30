@@ -18,6 +18,25 @@ HEALTH_URL="http://127.0.0.1:$PORT/health"
 fail() { echo "M7_INSTALL_FAIL: $*" >&2; exit 1; }
 [ -n "${1:-}" ] || fail "usage: m7-clean-install.sh install|launch|launch-core|health|stop|reinstall|uninstall|status [args]"
 CMD="$1"; shift || true
+# M8 BLOCKER 2: every kill goes through ownership verification (exact install path)
+. "$(dirname "$0")/verified-kill.sh"
+
+# Pids whose argv STARTS with this install's gui binary (anchored — wrappers
+# that merely mention the path never match).
+gui_pids() {
+  local p
+  for p in $(pgrep -f "$APP_SRC/Contents/MacOS/jarvis-desktop" 2>/dev/null); do
+    case "$(ps -ww -p "$p" -o args= 2>/dev/null)" in
+      "$APP_SRC/Contents/MacOS/jarvis-desktop"*) echo "$p" ;;
+    esac
+  done
+}
+gui_sweep() { # SIG — ownership-verified signal to every gui pid of this install
+  local p
+  for p in $(gui_pids); do
+    verified_kill_pid "$p" "$APP_SRC/Contents/MacOS/jarvis-desktop" "$1" || true
+  done
+}
 
 mount_dmg() {
   [ -f "$DMG" ] || fail "DMG not found: $DMG (run scripts/release/build-dmg.sh)"
@@ -50,9 +69,11 @@ warm_first_exec() { # first exec of freshly-copied binaries can block in macOS
     curl -s -m 2 "http://127.0.0.1:$WARM_PORT/health" 2>/dev/null | grep -q '"core":"online"' && { ok=1; break; }
     sleep 2
   done
-  [ -f "$wpid" ] && kill "$(cat "$wpid")" 2>/dev/null || true
-  sleep 1
-  [ -f "$wpid" ] && kill -9 "$(cat "$wpid")" 2>/dev/null || true
+  if [ -f "$wpid" ]; then
+    verified_kill_pid "$(cat "$wpid")" "$APP_SRC" TERM || true
+    sleep 1
+    verified_kill_pid "$(cat "$wpid")" "$APP_SRC" KILL || true
+  fi
   rm -rf "$wrt" "$wws" "$wpid" "$LOGS/warm.log"
   [ "$ok" = 1 ] || echo "M7_INSTALL: warm-up did not confirm health (assessment still slow?)" >&2
 }
@@ -84,26 +105,50 @@ wait_health() { # $1 = max seconds
 
 do_stop() { # stop core AND the GUI; assert the port is released (no duplicate core survives)
   stop_core
-  pkill -f "$APP_SRC/Contents/MacOS/jarvis-desktop" 2>/dev/null || true
+  local nb n1 n2
+  nb=$(gui_pids | grep -c . || true)
+  # GUI: pid captured at OUR launch; live argv must still be this install's binary
+  if [ -f "$RUN/gui.pid" ]; then
+    verified_kill_pid "$(cat "$RUN/gui.pid")" "$APP_SRC/Contents/MacOS/jarvis-desktop" TERM || true
+    rm -f "$RUN/gui.pid"
+  fi
+  # Sweep EVERY gui process of this install (M8 P7): a stale/absent pidfile can
+  # leave an old instance alive — port-free only proves the CORE died, never the
+  # GUI — and a surviving old GUI steals harness commands from the relaunched one
+  # (two in-page drivers polling /cmd: split brain). Anchored argv match so we
+  # never signal wrappers (pgrep/grep/open) that merely mention the path.
+  gui_sweep TERM
+  for _ in $(seq 1 25); do [ -z "$(gui_pids)" ] && break; sleep 0.4; done
+  n1=$(gui_pids | grep -c . || true)
+  gui_sweep KILL
+  sleep 0.5
+  n2=$(gui_pids | grep -c . || true)
+  [ "${n2:-0}" = "0" ] || fail "stop left ${n2} gui process(es) of this install"
   for _ in $(seq 1 25); do port_free && break; sleep 0.4; done
   if ! port_free; then
-    local_pids=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u)
-    for p in $local_pids; do kill "$p" 2>/dev/null || true; done
+    # port fallback: only a holder whose argv proves it is THIS install gets killed
+    local p
+    for p in $(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+      verified_kill_pid "$p" "$APP_SRC" TERM || true
+    done
     sleep 2
-    pkill -9 -f "$APP_SRC/Contents/MacOS" 2>/dev/null || true
+    for p in $(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+      verified_kill_pid "$p" "$APP_SRC" KILL || true
+    done
     for _ in $(seq 1 25); do port_free && break; sleep 0.4; done
   fi
-  port_free || fail "port $PORT still in use after stop"
-  echo "M7_STOP_OK: port $PORT free"
+  port_free || fail "port $PORT still in use after stop (foreign holder would be refused, never killed)"
+  echo "M7_STOP_OK: port $PORT free gui=${nb}->${n1}->${n2}"
 }
 
 stop_core() {
   if [ -f "$PIDFILE" ]; then
     local pid; pid=$(cat "$PIDFILE" 2>/dev/null || true)
     if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
+      # proof first: live argv must contain our exact install path
+      verified_kill_pid "$pid" "$APP_SRC" TERM || true
       for _ in $(seq 1 25); do kill -0 "$pid" 2>/dev/null || break; sleep 0.4; done
-      kill -9 "$pid" 2>/dev/null || true
+      verified_kill_pid "$pid" "$APP_SRC" KILL || true
     fi
     rm -f "$PIDFILE"
   fi
@@ -122,8 +167,24 @@ case "$CMD" in
   launch) # GUI first launch (FR-2): spawns the packaged sidecar with our env inherited
     [ -d "$APP_SRC" ] || fail "not installed — run install first"
     mkdir -p "$RUN" "$LOGS" "$STATE" "$WORKSPACE"
-    open -n --env "JARVIS_PORT=$PORT" --env "JARVIS_RUNTIME_DIR=$STATE" --env "JARVIS_ORPHAN_ROOT=$WORKSPACE" "$APP_SRC" || fail "open failed"
+    # M8 GUI E2E: pass the harness URL through when set (production never sets it)
+    E2E_ARGS=()
+    [ -n "${JARVIS_E2E:-}" ] && E2E_ARGS+=(--env "JARVIS_E2E=$JARVIS_E2E")
+    open -n --env "JARVIS_PORT=$PORT" --env "JARVIS_RUNTIME_DIR=$STATE" --env "JARVIS_ORPHAN_ROOT=$WORKSPACE" ${E2E_ARGS[@]+"${E2E_ARGS[@]}"} "$APP_SRC" || fail "open failed"
     wait_health "${1:-120}"
+    # capture OUR gui pid with an exact-path identity proof (for ownership-verified stop)
+    local_gp=$(pgrep -f "$APP_SRC/Contents/MacOS/jarvis-desktop" 2>/dev/null | head -1 || true)
+    if [ -n "${local_gp:-}" ]; then
+      case "$(ps -ww -p "$local_gp" -o args= 2>/dev/null)" in
+        *"$APP_SRC/Contents/MacOS/jarvis-desktop"*) echo "$local_gp" > "$RUN/gui.pid" ;;
+        *) echo "M7_LAUNCH: gui pid $local_gp failed identity proof — not recorded" >&2 ;;
+      esac
+    fi
+    # exactly one instance may exist after launch — a leftover from a previous
+    # phase would be a second in-page driver (M8 P7 split-brain)
+    n=$(gui_pids | grep -c . || true)
+    echo "M7_LAUNCH_GPIDS: ${n:-0} pidfile=${local_gp:-none}"
+    [ "${n:-0}" = "1" ] || fail "expected exactly 1 gui after launch, found ${n:-0}"
     ;;
 
   launch-core) # direct sidecar launch (task phases — no window); pidfile + log
@@ -156,8 +217,8 @@ case "$CMD" in
 
   uninstall) # FR-18: remove the installed app only — exact-path guard, nothing else
     case "$ROOT" in
-      *jarvis-m7*) ;;
-      *) fail "refusing to uninstall: M7_ROOT '$ROOT' lacks the jarvis-m7 guard" ;;
+      *jarvis-m7*|*jarvis-m8*) ;;
+      *) fail "refusing to uninstall: M7_ROOT '$ROOT' lacks the jarvis-m7/m8 guard" ;;
     esac
     do_stop
     rm -rf "$ROOT/install"

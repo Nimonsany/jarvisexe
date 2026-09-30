@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { JarvisClient, setDeviceToken } from '../services/JarvisClient';
+import { handshakeCore } from '../services/coreEndpoint';
 import type { Settings } from '../types';
 
 export function SettingsPage({ settings, onSaved }: { settings: Settings | null; onSaved: (s: Settings) => void }) {
@@ -25,7 +26,8 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
 
   const revealToken = async () => {
     try {
-      const r = await fetch('http://127.0.0.1:7788/api/bootstrap');
+      const { base } = await handshakeCore();
+      const r = await fetch(`${base}/api/bootstrap`);
       if (r.ok) setTokenShown(((await r.json()) as { token: string }).token);
       else setTokenShown('Local-only — available on the JARVIS machine.');
     } catch { setTokenShown('Core offline.'); }
