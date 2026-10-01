@@ -9,6 +9,12 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
   const [tokenShown, setTokenShown] = useState<string | null>(null);
   const [deviceToken, setTokenInput] = useState('');
   const [updMsg, setUpdMsg] = useState<string | null>(null);
+  // mirror updater status to localStorage: survives app death mid-update,
+  // so the M9 e2e can read the LAST known state after a respawn (forensics)
+  const setUpd = (m: string | null): void => {
+    setUpdMsg(m);
+    try { if (m === null) localStorage.removeItem('jarvis.e2e.updMsg'); else localStorage.setItem('jarvis.e2e.updMsg', m); } catch { /* ignore */ }
+  };
   const [updBusy, setUpdBusy] = useState(false);
   useEffect(() => { if (!draft && settings) setDraft(settings); }, [settings, draft]);
   if (!draft) return <div className="page"><p className="muted">Loading settings…</p></div>;
@@ -108,18 +114,18 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
       <p className="muted">Signed updates only (Ed25519 signature verified against the key embedded in this app).</p>
       <div className="controls">
         <button disabled={updBusy} onClick={async () => {
-          setUpdBusy(true); setUpdMsg(null);
+          setUpdBusy(true); setUpd(null);
           try {
             const { check } = await import('@tauri-apps/plugin-updater');
             const { relaunch } = await import('@tauri-apps/plugin-process');
             const u = await check();
-            if (!u) { setUpdMsg('Up to date.'); return; }
-            setUpdMsg(`Update ${u.version} available — downloading…`);
+            if (!u) { setUpd('Up to date.'); return; }
+            setUpd(`Update ${u.version} available — downloading…`);
             await u.downloadAndInstall();
-            setUpdMsg(`Installed ${u.version}. Relaunching…`);
+            setUpd(`Installed ${u.version}. Relaunching…`);
             await relaunch();
           } catch (e) {
-            setUpdMsg(`Update check failed: ${e instanceof Error ? e.message : e}`);
+            setUpd(`Update check failed: ${e instanceof Error ? e.message : e}`);
           } finally { setUpdBusy(false); }
         }}>{updBusy ? 'Checking…' : 'Check for updates'}</button>
         {updMsg && <span className="muted">{updMsg}</span>}

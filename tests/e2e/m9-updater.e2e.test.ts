@@ -132,11 +132,13 @@ const harness: Server = createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url?.split('?')[0] === '/latest.json') {
     if (latestDoc === null) { res.writeHead(404).end(); return; }
+    console.log(`[h] GET /latest.json @ ${new Date().toISOString()}`);
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(latestDoc));
     return;
   }
   if (req.method === 'GET' && req.url?.split('?')[0] === `/pkg/${pkgName}`) {
     if (!pkgPath || !existsSync(pkgPath)) { res.writeHead(404).end(); return; }
+    console.log(`[h] GET /pkg @ ${new Date().toISOString()}`);
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
     createReadStream(pkgPath).pipe(res);
     return;
@@ -287,8 +289,19 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     assert.ok(pidsBefore.length >= 1, 'gui running before update');
     // The message /done can be lost when relaunch() tears the page down — ground
     // truth is the pid change (old binary replaced + new process running).
-    const msg = await cmdMaybeLost({ cmd: 'wait', text: 'Installed 0.1.1', timeoutMs: 180_000 }, 190);
-    if (msg) console.log('  update progress visible: ' + msg.trim().slice(0, 80));
+    // sample the persisted updater status (localStorage survives app death)
+    // instead of blind-waiting: we learn exactly how far the flow got and why
+    // the process went away, even across a respawn.
+    let lastMsg = '';
+    const t0 = Date.now();
+    while (Date.now() - t0 < 200_000) {
+      let m: string | null = null;
+      try { m = await cmdMaybeLost({ cmd: 'storage', value: 'jarvis.e2e.updMsg', timeoutMs: 4_000 }, 8); } catch { /* transient */ }
+      if (m && m !== lastMsg) { console.log(`  [ui] ${m}`); lastMsg = m; }
+      if (lastMsg.includes('Installed')) break;
+      await sleep(3000);
+    }
+    if (lastMsg) console.log('  last updater status: ' + lastMsg);
     const plistVer = (): string => {
       try { return execFileSync('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', path.join(INSTALL_APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim(); }
       catch (e) { return `unreadable:${e instanceof Error ? e.message : e}`; }
@@ -307,7 +320,7 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     const body = await cmdMaybeLost({ cmd: 'wait', timeoutMs: 5_000 }, 12); // no text → instant innerText dump
     if (body) console.log('  UI body after pid change: ' + body.replace(/\s+/g, ' ').slice(0, 400));
     const v = plistVer();
-    if (v !== '0.1.1') throw new Error(`relaunch without install — bundle version still ${v} (update never extracted; UI: ${(body ?? 'no driver').replace(/\s+/g, ' ').slice(0, 300)})`);
+    if (v !== '0.1.1') throw new Error(`relaunch without install — bundle version still ${v} | last ui: ${lastMsg || 'none'} | pkg GET logged above | UI: ${(body ?? 'no driver').replace(/\s+/g, ' ').slice(0, 200)}`);
     disarmFocusGuard(); armFocusGuard(); // stale-page floor: only post-restart polls count
     resyncPages();
   });
