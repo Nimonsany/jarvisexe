@@ -260,15 +260,26 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     cpSync(path.join(REPO, 'dist-core/jarvis-core'), path.join(APP_DIR, 'binaries', `jarvis-core-${triple}`));
     chmodSync(path.join(APP_DIR, 'binaries', `jarvis-core-${triple}`), 0o755);
 
+    // build under owner-load: single-job cargo + one retry (rustc gets silently
+    // SIGKILLed by memory pressure on this box — no cargo error line, just death)
+    const cargoEnv = { ...signEnv, CARGO_BUILD_JOBS: '1' };
+    const build = (cfg: string, what: string): void => {
+      try { sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', cfg], { cwd: APP_DIR, env: cargoEnv, timeout: 3_600_000 }); }
+      catch (e) {
+        console.log(`  ${what} build failed — retrying once (${String(e).slice(0, 120)})`);
+        sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', cfg], { cwd: APP_DIR, env: cargoEnv, timeout: 3_600_000 });
+      }
+    };
+
     // build A (current version 0.1.0 from tauri.conf) with the localhost endpoint
-    sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', updCfg()], { cwd: APP_DIR, env: signEnv, timeout: 3_600_000 });
+    build(updCfg(), 'A');
     const appA = path.join(BUNDLE_MACOS, 'JARVIS.app');
     assert.ok(existsSync(path.join(appA, 'Contents/MacOS/jarvis-desktop')), 'A app built');
     rmSync(path.join(ARTIFACTS, 'JARVIS-A.app'), { recursive: true, force: true });
     cpSync(appA, path.join(ARTIFACTS, 'JARVIS-A.app'), { recursive: true });
 
     // build B: version override via --config (no tracked file edits)
-    sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', updCfg({ version: '0.1.1' })], { cwd: APP_DIR, env: signEnv, timeout: 3_600_000 });
+    build(updCfg({ version: '0.1.1' }), 'B');
     const builtTgz = path.join(BUNDLE_MACOS, 'JARVIS.app.tar.gz');
     const builtSig = `${builtTgz}.sig`;
     assert.ok(existsSync(builtTgz), 'B update bundle produced');
