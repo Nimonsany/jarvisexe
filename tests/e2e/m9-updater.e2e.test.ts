@@ -29,9 +29,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-// /private/tmp, not /tmp: macOS tauri-utils StartingBinary rejects current_exe()
-// paths containing symlinks (/tmp → /private/tmp), which makes updater check() fail
-const ROOT = process.env.M9_ROOT || `/private/tmp/jarvis-m9-upd-${process.pid}`;
+// ~/.cache, not /tmp: macOS LaunchServices standardizes /private/tmp → /tmp, and
+// tauri-utils StartingBinary rejects symlinked current_exe() (/tmp → /private/tmp)
+// on macOS — which then also breaks m7 ownership checks and focusGuard pgrep
+const ROOT = process.env.M9_ROOT || path.join(process.env.HOME ?? '', '.cache', `jarvis-m9-upd-${process.pid}`);
 const PORT = Number(process.env.M9_PORT || 7793);
 // core on its own port: the harness already owns PORT, and the m7 script binds
 // health to M7_PORT — sharing one port made the core lose the bind to the harness
