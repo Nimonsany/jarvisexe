@@ -11,6 +11,7 @@ const BASE = 'http://127.0.0.1:7788';
 try {
   await fetch(BASE + '/', { signal: AbortSignal.timeout(2000) });
   readFileSync('runtime/auth-token', 'utf8');
+  readFileSync('runtime/settings.json', 'utf8');
 } catch {
   console.log('SKIP m6-remote: core server on 7788 or runtime/auth-token not available');
   process.exit(0);
