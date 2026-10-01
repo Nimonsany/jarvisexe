@@ -73,7 +73,7 @@ let aborted = false;
 const sh = (cmd: string, args: string[] = [], opts: { timeout?: number; env?: Record<string, string>; cwd?: string } = {}): string =>
   execFileSync(cmd, args, {
     cwd: opts.cwd ?? REPO,
-    env: { ...process.env, M7_ROOT: ROOT, M7_PORT: String(CORE_PORT), ...opts.env },
+    env: { ...process.env, M7_ROOT: ROOT, M7_PORT: String(CORE_PORT), JARVIS_AGENTS_DIR: path.join(ROOT, 'agents'), ...opts.env },
     encoding: 'utf8',
     timeout: opts.timeout ?? 300_000,
     maxBuffer: 64 * 1024 * 1024,
@@ -328,6 +328,25 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     await navSettings();
     const pidsBefore = guiPids();
     assert.ok(pidsBefore.length >= 1, 'gui running before update');
+    await clickCheck();
+    // forensics: what state did the click leave the page in? 'Checking…' alive +
+    // empty storage = check() invoked and hanging; empty body = page crashed;
+    // no 'Checking…' = click never reached the handler.
+    await sleep(2500);
+    const postBody = await cmdMaybeLost({ cmd: 'wait', timeoutMs: 5_000 }, 6);
+    const postVer = await cmdMaybeLost({ cmd: 'app_version', timeoutMs: 5_000 }, 6).catch(() => 'ERR');
+    const postMsg = await cmdMaybeLost({ cmd: 'storage', value: 'jarvis.e2e.updMsg', timeoutMs: 4_000 }, 6).catch(() => 'ERR');
+    console.log(`  post-click body: ${JSON.stringify((postBody ?? '').replace(/\s+/g, ' ').slice(0, 300))}`);
+    console.log(`  post-click appver=${String(postVer)} storage=${JSON.stringify(postMsg)}`);
+    try { execFileSync('screencapture', ['-x', `${ROOT}/p2-after-click.png`], { timeout: 5000, stdio: 'ignore' }); } catch { /* no */ }
+    // SYN_SENT from ANY process: catches a check() connecting to a wrong/stale
+    // port or to github even when the harness sees nothing
+    const syn = setInterval(() => {
+      try {
+        const out = execFileSync('netstat', ['-an'], { encoding: 'utf8' });
+        for (const line of out.split('\n')) if (line.includes('SYN_SENT')) console.log('  [net] ' + line.trim().replace(/\s+/g, ' '));
+      } catch { /* ignore */ }
+    }, 1500);
     // The message /done can be lost when relaunch() tears the page down — ground
     // truth is the pid change (old binary replaced + new process running).
     // sample the persisted updater status (localStorage survives app death)
