@@ -98,6 +98,9 @@ type HCmd = { id: string; cmd: string; sel?: string; value?: string; text?: stri
 const pending: HCmd[] = [];
 const finished = new Map<string, { ok: boolean; value?: string; error?: string }>();
 let cmdSeq = 0;
+// forensics: which driver instance took a cmd, and who keeps polling
+const servedAt = new Map<string, { key: string; at: number }>();
+const getsByKey = new Map<string, { n: number; pageT: number; last: number }>();
 let lastGetAt = 0;
 let lastGetKey = '-';
 let pageFloor = 0;
@@ -120,8 +123,12 @@ const harness: Server = createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     lastGetKey = u.searchParams.get('k') ?? '-';
     const pageT = Number(u.searchParams.get('t') ?? '0');
+    const g = getsByKey.get(lastGetKey) ?? { n: 0, pageT, last: 0 };
+    g.n += 1; g.last = now; if (pageT) g.pageT = pageT;
+    getsByKey.set(lastGetKey, g);
     if (pageT && pageT < pageFloor) { res.writeHead(200, { 'Content-Type': 'application/json' }).end('null'); return; }
     const c = pending.shift() ?? null;
+    if (c) { servedAt.set(c.id, { key: lastGetKey, at: now }); console.log(`[h] shift ${c.id} → ${lastGetKey} (pageT ${Math.round(pageT / 1000)}s)`); }
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(c));
     return;
   }
@@ -188,7 +195,11 @@ async function cmd(c: Omit<HCmd, 'id'>, timeoutSec: number): Promise<string> {
     if (b?.ok) stuck = ` | body: ${JSON.stringify((b.value ?? '').replace(/\s+/g, ' ').slice(0, 300))}`;
   } catch { /* ignore */ }
   try { execFileSync('screencapture', ['-x', `/tmp/m9-stuck-${cmdSeq}.png`], { timeout: 5000, stdio: 'ignore' }); } catch { /* ignore */ }
-  throw new Error(`harness timeout (${timeoutSec}s): ${c.cmd} sel=${c.sel ?? '-'} text=${c.text ?? '-'}${liveness}${stuck}`);
+  const s = servedAt.get(id);
+  const drivers = [...getsByKey.entries()].map(([k, v]) => `${k}:n=${v.n},pageAge=${Math.round((Date.now() - v.pageT) / 1000)}s,lastGet=${Math.round((Date.now() - v.last) / 1000)}s ago`).join(' | ');
+  const servedInfo = s ? ` | served→${s.key} ${Math.round((Date.now() - s.at) / 1000)}s ago, no done` : ' | never served';
+  servedAt.delete(id);
+  throw new Error(`harness timeout (${timeoutSec}s): ${c.cmd} sel=${c.sel ?? '-'} text=${c.text ?? '-'}${liveness}${stuck}${servedInfo} | drivers: ${drivers}`);
 }
 
 /** Fire-and-forget variant: /done may be lost when the command's last act is
