@@ -31,6 +31,9 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const ROOT = process.env.M9_ROOT || `/tmp/jarvis-m9-upd-${process.pid}`;
 const PORT = Number(process.env.M9_PORT || 7793);
+// core on its own port: the harness already owns PORT, and the m7 script binds
+// health to M7_PORT — sharing one port made the core lose the bind to the harness
+const CORE_PORT = Number(process.env.M9_CORE_PORT || 7794);
 const OWNER_API = 'http://127.0.0.1:7788';
 const SCRIPTS = path.join(REPO, 'scripts/release');
 const DEV_RUNTIME = path.join(REPO, 'runtime');
@@ -53,7 +56,7 @@ function armFocusGuard(): void {
       try { execFileSync('pgrep', ['-f', `${ROOT}/install/JARVIS.app/Contents/MacOS/jarvis-desktop`], { stdio: 'ignore' }); alive = true; } catch { /* dead */ }
       if (!alive) {
         console.log('  focusGuard: gui dead — respawning with e2e env');
-        execFileSync('open', ['-n', '--env', `JARVIS_E2E=${HARNESS_URL}`, '--env', `JARVIS_PORT=${PORT}`,
+        execFileSync('open', ['-n', '--env', `JARVIS_E2E=${HARNESS_URL}`, '--env', `JARVIS_PORT=${CORE_PORT}`,
           '--env', `JARVIS_RUNTIME_DIR=${ROOT}/state`, '--env', `JARVIS_ORPHAN_ROOT=${ROOT}/workspace`, INSTALL_APP],
           { timeout: 2000, stdio: 'ignore' });
       } else {
@@ -70,7 +73,7 @@ let aborted = false;
 const sh = (cmd: string, args: string[] = [], opts: { timeout?: number; env?: Record<string, string>; cwd?: string } = {}): string =>
   execFileSync(cmd, args, {
     cwd: opts.cwd ?? REPO,
-    env: { ...process.env, M7_ROOT: ROOT, M7_PORT: String(PORT), ...opts.env },
+    env: { ...process.env, M7_ROOT: ROOT, M7_PORT: String(CORE_PORT), ...opts.env },
     encoding: 'utf8',
     timeout: opts.timeout ?? 300_000,
     maxBuffer: 64 * 1024 * 1024,
@@ -193,7 +196,7 @@ const guiPids = (): string[] => {
 async function apiVersion(): Promise<string> {
   const tokenFile = path.join(ROOT, 'state', 'auth-token');
   const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
-  const r = await fetch(`http://127.0.0.1:${PORT}/api/version`, {
+  const r = await fetch(`http://127.0.0.1:${CORE_PORT}/api/version`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     signal: AbortSignal.timeout(5000),
   });
