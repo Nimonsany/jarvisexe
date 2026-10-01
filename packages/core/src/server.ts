@@ -266,8 +266,11 @@ export class JarvisServer {
   private checkOpencode(): Promise<Health['opencode']> {
     return new Promise((resolve) => {
       const p = spawn(this.opencodeBin(), ['--version'], { stdio: 'ignore' });
-      p.on('error', () => resolve('missing'));
-      p.on('exit', (code) => resolve(code === 0 ? 'ready' : 'missing'));
+      // bounded probe — opencode --version can stall for minutes (1.9GB local
+      // db + active sessions) and health must never hang (same as checkVoice)
+      const timer = setTimeout(() => { p.kill('SIGKILL'); resolve('missing'); }, 10_000);
+      p.on('error', () => { clearTimeout(timer); resolve('missing'); });
+      p.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 ? 'ready' : 'missing'); });
     });
   }
 
