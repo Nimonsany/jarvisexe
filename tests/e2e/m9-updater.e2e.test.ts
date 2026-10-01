@@ -44,7 +44,20 @@ let focusGuard: ReturnType<typeof setInterval> | null = null;
 function armFocusGuard(): void {
   if (focusGuard) return;
   focusGuard = setInterval(() => {
-    try { execFileSync('open', [INSTALL_APP], { timeout: 2000, stdio: 'ignore' }); } catch { /* not up yet */ }
+    try {
+      // respawn only when dead — and ALWAYS with the harness env, else the
+      // replacement instance has no driver and the test silently loses it
+      let alive = false;
+      try { execFileSync('pgrep', ['-f', `${ROOT}/install/JARVIS.app/Contents/MacOS/jarvis-desktop`], { stdio: 'ignore' }); alive = true; } catch { /* dead */ }
+      if (!alive) {
+        console.log('  focusGuard: gui dead — respawning with e2e env');
+        execFileSync('open', ['-n', '--env', `JARVIS_E2E=${HARNESS_URL}`, '--env', `JARVIS_PORT=${PORT}`,
+          '--env', `JARVIS_RUNTIME_DIR=${ROOT}/state`, '--env', `JARVIS_ORPHAN_ROOT=${ROOT}/workspace`, INSTALL_APP],
+          { timeout: 2000, stdio: 'ignore' });
+      } else {
+        execFileSync('open', [INSTALL_APP], { timeout: 2000, stdio: 'ignore' });
+      }
+    } catch { /* not up yet */ }
   }, 2000);
 }
 function disarmFocusGuard(): void { if (focusGuard) { clearInterval(focusGuard); focusGuard = null; } }
@@ -276,6 +289,10 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     // truth is the pid change (old binary replaced + new process running).
     const msg = await cmdMaybeLost({ cmd: 'wait', text: 'Installed 0.1.1', timeoutMs: 180_000 }, 190);
     if (msg) console.log('  update progress visible: ' + msg.trim().slice(0, 80));
+    const plistVer = (): string => {
+      try { return execFileSync('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', path.join(INSTALL_APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim(); }
+      catch (e) { return `unreadable:${e instanceof Error ? e.message : e}`; }
+    };
     const deadline = Date.now() + 300_000;
     for (;;) {
       const now = guiPids();
@@ -283,7 +300,14 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
       if (Date.now() > deadline) throw new Error(`relaunch not detected (before=${pidsBefore} now=${now})`);
       await sleep(2000);
     }
-    console.log('  relaunch detected, new gui: ' + guiPids().join(','));
+    await sleep(2000); // install completes before relaunch() in the real flow
+    console.log('  relaunch detected, new gui: ' + guiPids().join(',') + ' | installed version now ' + plistVer());
+    // ground truth: relaunch() only runs after downloadAndInstall() resolved,
+    // which only succeeds after the bundle is swapped — so version MUST be 0.1.1.
+    const body = await cmdMaybeLost({ cmd: 'wait', timeoutMs: 5_000 }, 12); // no text → instant innerText dump
+    if (body) console.log('  UI body after pid change: ' + body.replace(/\s+/g, ' ').slice(0, 400));
+    const v = plistVer();
+    if (v !== '0.1.1') throw new Error(`relaunch without install — bundle version still ${v} (update never extracted; UI: ${(body ?? 'no driver').replace(/\s+/g, ' ').slice(0, 300)})`);
     disarmFocusGuard(); armFocusGuard(); // stale-page floor: only post-restart polls count
     resyncPages();
   });
