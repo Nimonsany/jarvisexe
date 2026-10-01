@@ -90,7 +90,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
           Copy-Item dist-core/jarvis-core.cmd "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe"
       - name: Build app
-        run: npx tauri build --bundles app
+        run: npx tauri build --no-bundle
         working-directory: apps/desktop/src-tauri
 
   build-linux:
@@ -118,5 +118,5 @@ jobs:
           cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
           chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
       - name: Build app
-        run: npx tauri build --bundles app
+        run: npx tauri build --no-bundle
         working-directory: apps/desktop/src-tauri
