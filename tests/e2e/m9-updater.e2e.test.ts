@@ -13,7 +13,7 @@
  *       no relaunch                                            (Phase 20 tamper)
  *   P4  lower version (0.0.9) in latest.json → "Up to date."   (Phase 18/21
  *       downgrade rejection — frontend never relaxes this)
- *   P5  foreign platform key only → "Up to date."              (Phase 18 platform)
+ *   P5  foreign platform key only → rejection error, stays 0.1.0 (Phase 18 platform)
  *   P6  reinstall the saved A artifact → back on 0.1.0          (Phase 21 rollback)
  *
  * The dev server on 7788 is guarded throughout and never touched.
@@ -218,6 +218,11 @@ const guiPids = (): string[] => {
   catch { return []; }
 };
 
+const plistVer = (): string => {
+  try { return execFileSync('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', path.join(INSTALL_APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim(); }
+  catch (e) { return `unreadable:${e instanceof Error ? e.message : e}`; }
+};
+
 async function apiVersion(): Promise<string> {
   const tokenFile = path.join(ROOT, 'state', 'auth-token');
   const token = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '';
@@ -391,10 +396,6 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
       await sleep(3000);
     }
     if (lastMsg) console.log('  last updater status: ' + lastMsg);
-    const plistVer = (): string => {
-      try { return execFileSync('plutil', ['-extract', 'CFBundleShortVersionString', 'raw', path.join(INSTALL_APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim(); }
-      catch (e) { return `unreadable:${e instanceof Error ? e.message : e}`; }
-    };
     const deadline = Date.now() + 300_000;
     for (;;) {
       const now = guiPids();
@@ -458,11 +459,17 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     assert.equal(await appVersion(), '0.1.0', 'still 0.1.0');
   });
 
-  await phase('P5 foreign platform rejected — linux-only latest.json → Up to date', async () => {
+  await phase('P5 foreign platform rejected — linux-only latest.json → error, no install', async () => {
     latestDoc = { version: '0.1.1', platforms: { 'linux-x86_64': { url: pkgUrl(), signature: bSig() } } };
+    const pidsBefore = guiPids();
     await clickCheck();
-    const txt = await cmd({ cmd: 'wait', text: 'Up to date.', timeoutMs: 120_000 }, 150);
-    assert.match(txt, /Up to date\./, 'no darwin entry → no update for this platform');
+    // plugin check() resolves targets [darwin-x86_64-dmg, darwin-x86_64] against the
+    // manifest and ERRORS (TargetsNotFound) when only foreign keys exist — surfaced
+    // as "Update check failed: None of the fallback platforms …", never an offer
+    const txt = await cmd({ cmd: 'wait', text: 'Update check failed', timeoutMs: 120_000 }, 150);
+    assert.match(txt, /fallback platforms|Update check failed/, 'no darwin entry → check rejects');
+    assert.equal(plistVer(), '0.1.0', 'foreign manifest never installed');
+    assert.deepEqual(guiPids().sort(), pidsBefore.sort(), 'no relaunch on foreign platform');
   });
 
   await phase('P6 rollback — reinstall saved A artifact → 0.1.0 healthy', async () => {
