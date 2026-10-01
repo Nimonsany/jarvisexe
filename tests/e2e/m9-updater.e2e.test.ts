@@ -310,6 +310,18 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
 
   await phase('P2 UI update 0.1.0 → 0.1.1 (signed download, install, relaunch)', async () => {
     latestDoc = withPlatform('0.1.1', pkgUrl(), bSig());
+    // network sniffer: where does check() actually connect? (baked endpoint
+    // port unknown for prebuilt artifacts; also catches github fallback)
+    const peers = new Set<string>();
+    const sniff = setInterval(() => {
+      try {
+        const pids = guiPids();
+        if (!pids.length) return;
+        const out = execFileSync('bash', ['-c', `lsof -nP -iTCP -a -p ${pids.join(',')} 2>/dev/null | awk 'NR>1 {print $8, $9}'`], { encoding: 'utf8' });
+        out.split('\n').map((s) => s.trim()).filter(Boolean).forEach((s) => peers.add(s));
+      } catch { /* app mid-restart */ }
+    }, 2000);
+    try {
     await navSettings();
     const pidsBefore = guiPids();
     assert.ok(pidsBefore.length >= 1, 'gui running before update');
@@ -323,7 +335,7 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     while (Date.now() - t0 < 200_000) {
       let m: string | null = null;
       try { m = await cmdMaybeLost({ cmd: 'storage', value: 'jarvis.e2e.updMsg', timeoutMs: 4_000 }, 8); } catch { /* transient */ }
-      if (m && m !== lastMsg) { console.log(`  [ui] ${m}`); lastMsg = m; }
+      if (m && !m.startsWith('unknown cmd') && m !== lastMsg) { console.log(`  [ui] ${m}`); lastMsg = m; }
       if (lastMsg.includes('Installed')) break;
       await sleep(3000);
     }
@@ -349,6 +361,10 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     if (v !== '0.1.1') throw new Error(`relaunch without install — bundle version still ${v} | last ui: ${lastMsg || 'none'} | pkg GET logged above | UI: ${(body ?? 'no driver').replace(/\s+/g, ' ').slice(0, 200)}`);
     disarmFocusGuard(); armFocusGuard(); // stale-page floor: only post-restart polls count
     resyncPages();
+    } finally {
+      clearInterval(sniff);
+      console.log('  P2 peers (STATE ADDR): ' + ([...peers].join(' | ') || 'none'));
+    }
   });
 
   await phase('P2b post-update re-check says Up to date + version 0.1.1', async () => {
