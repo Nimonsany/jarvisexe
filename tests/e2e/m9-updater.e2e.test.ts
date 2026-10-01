@@ -354,6 +354,7 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
         out.split('\n').map((s) => s.trim()).filter(Boolean).forEach((s) => peers.add(s));
       } catch { /* app mid-restart */ }
     }, 2000);
+    let syn: ReturnType<typeof setInterval> | null = null;
     try {
     await navSettings();
     const pidsBefore = guiPids();
@@ -375,7 +376,7 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     try { execFileSync('screencapture', ['-x', `${ROOT}/p2-after-click.png`], { timeout: 5000, stdio: 'ignore' }); } catch { /* no */ }
     // SYN_SENT from ANY process: catches a check() connecting to a wrong/stale
     // port or to github even when the harness sees nothing
-    const syn = setInterval(() => {
+    syn = setInterval(() => {
       try {
         const out = execFileSync('netstat', ['-an'], { encoding: 'utf8' });
         for (const line of out.split('\n')) if (line.includes('SYN_SENT')) console.log('  [net] ' + line.trim().replace(/\s+/g, ' '));
@@ -415,6 +416,7 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     if (preRestartT) pageFloor = preRestartT + 1; else resyncPages();
     } finally {
       clearInterval(sniff);
+      if (syn) clearInterval(syn);
       console.log('  P2 peers (STATE ADDR): ' + ([...peers].join(' | ') || 'none'));
     }
   });
