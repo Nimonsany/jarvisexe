@@ -209,7 +209,12 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
 
   const keyFile = path.join(process.env.HOME ?? '', '.jarvis/keys/updater.key');
   assert.ok(existsSync(keyFile), `updater signing key present at ${keyFile}`);
-  const signEnv = { TAURI_SIGNING_PRIVATE_KEY: readFileSync(keyFile, 'utf8') };
+  // passwordless key: PASSWORD must be set (empty) or the signer opens a TTY
+  // prompt and dies with "Device not configured" under test runners
+  const signEnv = {
+    TAURI_SIGNING_PRIVATE_KEY: readFileSync(keyFile, 'utf8'),
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '',
+  };
   const endpoint = `${HARNESS_URL}/latest.json`;
   const updCfg = (extra: Record<string, unknown> = {}): string => JSON.stringify({
     ...extra,
