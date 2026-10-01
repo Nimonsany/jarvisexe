@@ -52,6 +52,20 @@ jobs:
       - run: npm install
       - name: Build core runtime (sidecar)
         run: npx tsx packages/core/scripts/build-core-runtime.mts
+      - name: Sidecar launch smoke (Phase 5)
+        run: |
+          STAGE=$(mktemp -d); cp -R dist-core/* "$STAGE"/
+          JARVIS_PORT=7901 JARVIS_RUNTIME_DIR="$STAGE/rt" "$STAGE/jarvis-core" > /tmp/core-smoke.log 2>&1 &
+          CPID=$!
+          code=000
+          for i in $(seq 1 60); do
+            sleep 2
+            code=$(curl -s -m 2 -o /tmp/h.json -w "%{http_code}" http://127.0.0.1:7901/api/health || true)
+            [ "$code" = "200" ] && break
+          done
+          echo "health=$code"; cat /tmp/h.json 2>/dev/null; echo
+          kill $CPID 2>/dev/null || true
+          [ "$code" = "200" ] || { echo "sidecar smoke failed"; cat /tmp/core-smoke.log; exit 1; }
       - name: Generate build manifest
         run: npx tsx scripts/release/gen-manifest.mts
       - name: Stage sidecar binary
@@ -91,6 +105,20 @@ jobs:
           $triple = (((rustc -vV) -match '^host: ') -split ' ')[1]
           New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
           Copy-Item dist-core/jarvis-core.cmd "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe"
+      - name: Sidecar launch probe (Phase 5)
+        shell: pwsh
+        continue-on-error: true   # evidence collection, not a gate — see known-gap note
+        run: |
+          $triple = (((rustc -vV) -match '^host: ') -split ' ')[1]
+          $bin = "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe"
+          Write-Host "staged sidecar header: $((Get-Content $bin -TotalCount 1))"
+          try {
+            $p = Start-Process $bin -PassThru -WindowStyle Hidden -Wait -ErrorAction Stop
+            Write-Host "SPAWN_OK exit=$($p.ExitCode)"
+          } catch {
+            Write-Host "SPAWN_FAILED (batch script renamed .exe cannot be executed by CreateProcess): $_"
+            Write-Host "KNOWN GAP: Windows sidecar runtime launch is BUILT_NOT_RUNTIME_TESTED until a real Windows launcher exists."
+          }
       - name: Build app
         run: npx tauri build --no-bundle
         working-directory: apps/desktop/src-tauri
@@ -111,6 +139,20 @@ jobs:
       - run: npm install
       - name: Build core runtime (sidecar)
         run: npx tsx packages/core/scripts/build-core-runtime.mts
+      - name: Sidecar launch smoke (Phase 5)
+        run: |
+          STAGE=$(mktemp -d); cp -R dist-core/* "$STAGE"/
+          JARVIS_PORT=7902 JARVIS_RUNTIME_DIR="$STAGE/rt" "$STAGE/jarvis-core" > /tmp/core-smoke.log 2>&1 &
+          CPID=$!
+          code=000
+          for i in $(seq 1 60); do
+            sleep 2
+            code=$(curl -s -m 2 -o /tmp/h.json -w "%{http_code}" http://127.0.0.1:7902/api/health || true)
+            [ "$code" = "200" ] && break
+          done
+          echo "health=$code"; cat /tmp/h.json 2>/dev/null; echo
+          kill $CPID 2>/dev/null || true
+          [ "$code" = "200" ] || { echo "sidecar smoke failed"; cat /tmp/core-smoke.log; exit 1; }
       - name: Generate build manifest
         run: npx tsx scripts/release/gen-manifest.mts
       - name: Stage sidecar binary
