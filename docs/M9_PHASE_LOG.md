@@ -31,7 +31,13 @@
   unchanged + no relaunch (20), downgrade 0.0.9 reject + wrong-platform
   reject (18), rollback = reinstall saved A artifact → 0.1.0 (21).
   e2eDriver gains env-gated `app_version` cmd; evidence → m9-report.json
-  (gitignored). **Execution pending** (queued after local build + m7 gate).
+  (gitignored). **EXECUTED + GREEN** (runs 15/16: P0-P6 all pass,
+  `M9_UPDATER_PASS: yes`, clean exit; test15 report pass=true).
+  Root causes fixed en route: port split (harness 7793/core 7794), restored
+  lost clickCheck, updater /tmp symlink (StartingBinary) → ~/.cache ROOT,
+  post-restart pageFloor = pre-restart pageT (Date.now() floor rejected the
+  fresh relaunched page → starved cmds), P5 asserts plugin TargetsNotFound
+  rejection (Update check failed), syn sampler interval leak.
 - **22** `scripts/release/release-manifest.py` + per-job `build-info.py`
   (commit/toolchain/artifact sha256/signing facts), wired before checksums.
 - **23** SHA256SUMS.txt with `sha256sum -c` verify (release publish job) ✓.
@@ -57,6 +63,7 @@
   28 privileges note, 30 rc history note (rc1/rc2 failed, rc3/rc4 valid).
 - Phase 31: cut `v0.1.0-rc4` → release workflow full run → download assets →
   post-upload verification (manifest/checksums/inspection/latest.json).
+  **(updater A/B/tamper/rollback E2E now GREEN — unblocks rc4)**
 - Phase 32/33 dogfood + stability on CI-built rc4 DMG.
 - Phase 34 full regression; 35 security gate.
 - Phase 36-40: verdicts + REQUIRED FINAL REPORT. Stable `v0.1.0` tag only if
