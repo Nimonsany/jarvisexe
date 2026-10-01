@@ -32,6 +32,17 @@ jobs:
           fi
       - name: Dependency audit (production)
         run: npm audit --omit=dev
+      - name: SBOM (Phase 24)
+        run: npm sbom --sbom-format spdx --omit=dev > sbom.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+      - name: Rust dependency audit (Phase 25)
+        uses: taiki-e/install-action@cargo-audit
+      - name: cargo audit
+        run: cargo audit
+        working-directory: apps/desktop/src-tauri
       - name: Unit + integration tests
         run: npx tsx --test tests/*.test.ts tests/*.mts
       - name: Frontend tests
@@ -253,7 +264,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           NOTES=docs/RELEASE_NOTES.md
-          [ -f "$NOTES" ] || NOTES=""
+          if [ -f "$NOTES" ]; then
+            sed "s/<version>/${GITHUB_REF_NAME}/g" "$NOTES" > /tmp/release-notes.md
+            NOTES=/tmp/release-notes.md
+          else
+            NOTES=""
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* \
             --draft --title "JARVIS $GITHUB_REF_NAME" \
             ${NOTES:+--notes-file "$NOTES"} \
