@@ -37,7 +37,9 @@ const DEV_RUNTIME = path.join(REPO, 'runtime');
 const APP_DIR = path.join(REPO, 'apps/desktop/src-tauri');
 const BUNDLE_MACOS = path.join(APP_DIR, 'target/release/bundle/macos');
 const INSTALL_APP = path.join(ROOT, 'install/JARVIS.app');
-const ARTIFACTS = path.join(ROOT, 'artifacts');
+// shared across runs: A/B updater artifacts survive ROOT (pid-scoped) cleanup,
+// so M9_SKIP_BUILDS=1 can reuse them instead of re-linking under memory thrash
+const ARTIFACTS = process.env.M9_ARTIFACTS || '/tmp/jarvis-m9-artifacts';
 const REPORT_PATH = path.join(REPO, 'm9-report.json');
 
 let focusGuard: ReturnType<typeof setInterval> | null = null;
@@ -217,8 +219,10 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
   const ownerWasUp = await ownerUp();
   console.log(`owner dev server on 7788: ${ownerWasUp ? 'up (guarded)' : 'down at start'}`);
 
-  await new Promise<void>((r) => harness.listen(0, '127.0.0.1', r));
-  HARNESS_URL = `http://127.0.0.1:${(harness.address() as AddressInfo).port}`;
+  // fixed port: --config endpoint stays byte-identical across runs → cargo/tauri
+  // cache can hit (random port forced a full app recompile every run)
+  await new Promise<void>((res, rej) => { harness.once('error', rej); harness.listen(PORT, '127.0.0.1', res); });
+  HARNESS_URL = `http://127.0.0.1:${PORT}`;
   mkdirSync(ROOT, { recursive: true });
   mkdirSync(ARTIFACTS, { recursive: true });
 
@@ -240,6 +244,13 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
   let B_SIG = '';
 
   await phase('P0 builds — A (0.1.0) + signed B bundle (0.1.1) on localhost endpoint', async () => {
+    const aBin = path.join(ARTIFACTS, 'JARVIS-A.app/Contents/MacOS/jarvis-desktop');
+    const sharedTgz = path.join(ARTIFACTS, 'B.app.tar.gz');
+    if (process.env.M9_SKIP_BUILDS && existsSync(aBin) && existsSync(sharedTgz) && existsSync(`${sharedTgz}.sig`)) {
+      B_TGZ = sharedTgz; B_SIG = `${sharedTgz}.sig`; pkgPath = sharedTgz;
+      console.log('  M9_SKIP_BUILDS=1 — reusing shared A/B artifacts (stale-embed OK: no commit gate in m9)');
+      return;
+    }
     // freshness: manifest + core runtime + staged sidecar (build-dmg steps 1-2)
     sh('npx', ['tsx', 'scripts/release/gen-manifest.mts'], { timeout: 600_000 });
     sh('npx', ['tsx', 'packages/core/scripts/build-core-runtime.mts'], { timeout: 600_000 });
@@ -253,16 +264,20 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', updCfg()], { cwd: APP_DIR, env: signEnv, timeout: 3_600_000 });
     const appA = path.join(BUNDLE_MACOS, 'JARVIS.app');
     assert.ok(existsSync(path.join(appA, 'Contents/MacOS/jarvis-desktop')), 'A app built');
+    rmSync(path.join(ARTIFACTS, 'JARVIS-A.app'), { recursive: true, force: true });
     cpSync(appA, path.join(ARTIFACTS, 'JARVIS-A.app'), { recursive: true });
 
     // build B: version override via --config (no tracked file edits)
     sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', updCfg({ version: '0.1.1' })], { cwd: APP_DIR, env: signEnv, timeout: 3_600_000 });
-    B_TGZ = path.join(BUNDLE_MACOS, 'JARVIS.app.tar.gz');
-    B_SIG = `${B_TGZ}.sig`;
-    assert.ok(existsSync(B_TGZ), 'B update bundle produced');
-    assert.ok(existsSync(B_SIG), 'B updater signature produced');
+    const builtTgz = path.join(BUNDLE_MACOS, 'JARVIS.app.tar.gz');
+    const builtSig = `${builtTgz}.sig`;
+    assert.ok(existsSync(builtTgz), 'B update bundle produced');
+    assert.ok(existsSync(builtSig), 'B updater signature produced');
     pkgPath = path.join(ARTIFACTS, 'B.app.tar.gz');
-    cpSync(B_TGZ, pkgPath);
+    cpSync(builtTgz, pkgPath);
+    cpSync(builtSig, `${pkgPath}.sig`);
+    B_TGZ = pkgPath;
+    B_SIG = `${pkgPath}.sig`;
     console.log(`  A saved → ${path.join(ARTIFACTS, 'JARVIS-A.app')}; B sig=${readFileSync(B_SIG, 'utf8').slice(0, 24)}…`);
   });
 
