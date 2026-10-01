@@ -42,11 +42,14 @@ jobs:
       - run: npm install
       - name: Build core runtime (sidecar)
         run: npx tsx packages/core/scripts/build-core-runtime.mts
+      - name: Generate build manifest
+        run: npx tsx scripts/release/gen-manifest.mts
       - name: Stage sidecar binary
         run: |
+          TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p apps/desktop/src-tauri/binaries
-          cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-apple-darwin"
-          chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-apple-darwin"
+          cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
+          chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
       - name: Build app + DMG
         run: npx tauri build
         working-directory: apps/desktop/src-tauri
@@ -70,11 +73,14 @@ jobs:
       - run: npm install
       - name: Build core runtime (sidecar)
         run: npx tsx packages/core/scripts/build-core-runtime.mts
+      - name: Generate build manifest
+        run: npx tsx scripts/release/gen-manifest.mts
       - name: Stage sidecar binary
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries
-          Copy-Item dist-core/jarvis-core.cmd "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-pc-windows-msvc.cmd"
+          $triple = (((rustc -vV) -match '^host: ') -split ' ')[1]
+          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
+          Copy-Item dist-core/jarvis-core.cmd "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe"
       - name: Build app (NSIS/MSI)
         run: npx tauri build
         working-directory: apps/desktop/src-tauri
@@ -101,11 +107,14 @@ jobs:
       - run: npm install
       - name: Build core runtime (sidecar)
         run: npx tsx packages/core/scripts/build-core-runtime.mts
+      - name: Generate build manifest
+        run: npx tsx scripts/release/gen-manifest.mts
       - name: Stage sidecar binary
         run: |
+          TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p apps/desktop/src-tauri/binaries
-          cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-unknown-linux-gnu"
-          chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-x86_64-unknown-linux-gnu"
+          cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
+          chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
       - name: Build AppImage + DEB
         run: npx tauri build
         working-directory: apps/desktop/src-tauri
