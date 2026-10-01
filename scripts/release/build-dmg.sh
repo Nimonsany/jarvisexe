@@ -10,6 +10,9 @@ VER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
 # createUpdaterArtifacts: true requires the private key for ANY bundled build
 if [ -f "$HOME/.jarvis/keys/updater.key" ]; then
   export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.jarvis/keys/updater.key")"
+  # passwordless key: set the password env explicitly, else the signer opens a
+  # TTY prompt ("Device not configured" when run from a script/CI)
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 fi
 APP=apps/desktop/src-tauri/target/release/bundle/macos/JARVIS.app
 DMG_DIR=apps/desktop/src-tauri/target/release/bundle/dmg

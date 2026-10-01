@@ -45,8 +45,10 @@ npx tauri signer generate --ci -f -w ~/.jarvis/keys/updater.key
 ## CI configuration
 
 - Secret name: `TAURI_SIGNING_PRIVATE_KEY` (content of `updater.key`).
-- Optional: `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (not set for the current
-  passwordless key; required if the key is ever re-protected).
+- Optional: `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (release.yml always passes
+  this env — empty string while the key is passwordless, which is what stops
+  the signer from opening a TTY prompt in CI/scripts; required real value if
+  the key is ever re-protected).
 - The release workflow injects it as an env var for `tauri build` **only**.
   `.env` files do not work with Tauri and are not used.
 - The private key is never checked into Git, never written to logs, and never
