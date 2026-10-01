@@ -25,6 +25,13 @@
 - **17** `docs/UPDATER_KEY_MANAGEMENT.md` (gen/backup/rotation/CI secret/
   disaster recovery); key OUTSIDE repo (600), GH secret set, never printed.
 - **18** capability `updater:default` + `process:default` in default.json.
+- **18-21** `tests/e2e/m9-updater.e2e.test.ts` written (run via
+  `npm run test:m9-updater`, mac-only, heavy): real UI-driven signed A/B
+  update 0.1.0→0.1.1 + relaunch (19), tampered-signature reject with version
+  unchanged + no relaunch (20), downgrade 0.0.9 reject + wrong-platform
+  reject (18), rollback = reinstall saved A artifact → 0.1.0 (21).
+  e2eDriver gains env-gated `app_version` cmd; evidence → m9-report.json
+  (gitignored). **Execution pending** (queued after local build + m7 gate).
 - **22** `scripts/release/release-manifest.py` + per-job `build-info.py`
   (commit/toolchain/artifact sha256/signing facts), wired before checksums.
 - **23** SHA256SUMS.txt with `sha256sum -c` verify (release publish job) ✓.

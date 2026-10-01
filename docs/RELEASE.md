@@ -1,21 +1,21 @@
 # Release Plan & Signing
 
-## Release checklist (Milestone 8)
+## Release checklist (Milestone 9 — stable gate)
 
-1. All test suites green: M1 12/12 · M2 9/9 · M3 15/15 · M4 10/10 · M5 8/8 · M6 4/4 · IPC 8/8
-2. `npm audit --omit=dev` clean (production deps: 0 vulnerabilities)
-3. No secrets in the repo (`git ls-files` scan + history audit) — runtime state git-बाहिर
-4. Crash-recovery verified: SIGKILL → restart → discover → resume → COMPLETED; corrupt status.json skipped
-5. Installer verified: DMG → install → launch → sidecar up → uninstall clean
-6. CI valid (4 jobs), cross-platform builds defined
-7. Working tree clean, tagged
-
-## Tagging a release
-
-```bash
-git tag -a v0.1.0 -m "JARVIS v0.1.0 — Milestones 1-7"
-git push origin v0.1.0        # triggers the CI build-* jobs (v* tags)
-```
+1. All suites green: unit/integration (`npx tsx --test tests/*.test.ts tests/*.mts`),
+   `npx vitest run` (desktop), M7 clean-install E2E, M8 GUI release gate,
+   M9 updater E2E (`npm run test:m9-updater`)
+2. `npm audit --omit=dev` = 0 vulns; `cargo audit` gate green (release CI)
+3. Secret scans green (tracked-files scan in CI; artifact inspection
+   `scripts/release/inspect-artifact.py` in release packaging)
+4. Sidecar launch smoke green on macOS + Linux CI; Windows spawn probe
+   evidence collected (known launcher gap — see below)
+5. Release workflow produces dmg/NSIS/MSI/AppImage/DEB + SHA256SUMS +
+   release-manifest.json + SBOM + latest.json, artifact inspection clean
+6. Updater E2E: signed A/B update, tamper reject, downgrade reject,
+   wrong-platform reject, rollback reinstall all green
+7. Signing status honestly reported (below) — **not** inferred from builds
+8. Working tree clean, tag pushed, no force-push/tag rewrite ever
 
 ## macOS signing + notarization (when an Apple Developer ID is available)
 
@@ -73,3 +73,37 @@ git push origin v0.1.0        # triggers the CI build-* jobs (v* tags)
 Automated path (rollback = reinstall previous artifact) is covered by
 `m9-updater.e2e.test.ts` phase P6; in-app automatic downgrade is intentionally
 blocked (tamper/downgrade/platform rejects = P3-P5).
+
+## Tagging a release
+
+```bash
+git tag -a v0.1.0-rc4 -m "JARVIS v0.1.0-rc4 — M9 distribution RC"
+git push origin v0.1.0-rc4   # triggers release.yml (v* tag)
+```
+
+## Privileges (M9 Phase 28)
+
+- JARVIS never runs as root and never installs privileged helpers: user-level
+  `.app`, user-level sidecar, updates install into the app's own writable
+  location.
+- macOS TCC: Desktop/Documents/Downloads access is user-granted at first use;
+  ad-hoc builds get a per-cdhash identity (prompts reappear after every
+  rebuild — Developer ID would make grants stable). Grants are never
+  pre-seeded via private APIs; automated flows wait for the system prompt
+  (TCC watcher clicks it during test runs only).
+- No launchd agents or root LaunchAgents installed. `runtime/auth-token`
+  stays mode-600, outside git.
+- Windows/Linux installers request no elevation beyond conventional
+  per-user install (NSIS user scope / DEB without postinst escalation).
+
+## RC history (M9 Phase 30 — preserve, never rewrite)
+
+| Tag | Outcome |
+|-----|---------|
+| `v0.1.0-rc1` | FAILED — macOS `delete-to-trash` hardcoded `~/.Trash` (Linux CI crash) |
+| `v0.1.0-rc2` | FAILED — tests green, all three build jobs failed (arch/manifest/naming) |
+| `v0.1.0-rc3` | VALID RC — all 4 CI jobs green (no packaging workflow yet) |
+| `v0.1.0-rc4` | M9 distribution RC — full release workflow (dmg/NSIS/MSI/AppImage/DEB + updater) |
+
+Failed RC tags remain as history. Tags are never deleted, moved or
+force-pushed; stable `v0.1.0` does not exist until every stable gate passes.
