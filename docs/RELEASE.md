@@ -43,8 +43,33 @@ git push origin v0.1.0        # triggers the CI build-* jobs (v* tags)
 
 - AppImage/DEB: GPG-sign the `.deb` Release file and the AppImage (`--appimage-sign`), publish checksums (SHA256SUMS) with each release.
 
-## Auto-update (later milestone)
+## Auto-update (M9 — implemented)
 
-- Detect new signed releases via the GitHub Releases API.
-- Verify signatures/checksums BEFORE executing any update binary.
+- Tauri updater plugin: GitHub Releases `latest.json` endpoint, Ed25519
+  signature verified against the public key embedded at build time
+  (private key: repo secret `TAURI_SIGNING_PRIVATE_KEY`,
+  management in `docs/UPDATER_KEY_MANAGEMENT.md`).
+- Bundles are signed during `release.yml` packaging
+  (`createUpdaterArtifacts: true`); validation CI builds skip this.
+- Downgrade protection and platform-key matching are enforced by the plugin
+  (frontend never relaxes this) — verified by `tests/e2e/m9-updater.e2e.test.ts`
+  (A/B update, tamper reject, downgrade reject, wrong-platform reject).
 - Never auto-execute unsigned updates.
+
+## Rollback procedure (M9 Phase 21)
+
+1. Stop JARVIS (ownership-verified: `scripts/release/m7-clean-install.sh stop`
+   or quit the app).
+2. Keep previous-release artifacts — every GitHub release keeps its own DMG /
+   setup.exe / AppImage + `SHA256SUMS.txt` + `release-manifest.json`.
+3. Reinstall the previous artifact (DMG → drag to Applications, or
+   `m7-clean-install.sh install` against the old DMG). App state
+   (`~/.jarvis/runtime`-equivalent install state) survives reinstalls
+   (m8 reinstall phase proves history survives).
+4. Launch; verify the version in Settings → Updates ("Check for updates"
+   must report **Up to date** against a latest.json that still holds the
+   rolled-back version, or no update will be offered).
+
+Automated path (rollback = reinstall previous artifact) is covered by
+`m9-updater.e2e.test.ts` phase P6; in-app automatic downgrade is intentionally
+blocked (tamper/downgrade/platform rejects = P3-P5).

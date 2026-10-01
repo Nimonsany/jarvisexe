@@ -14,7 +14,8 @@
     "test:m8-core-endpoint": "npx tsx --test tests/m8-core-endpoint.test.ts",
     "test:m8-ownership": "npx tsx --test tests/m8-ownership.test.ts",
     "test:m8-voice": "npx tsx --test tests/m8-voice-mode.test.ts",
-    "test:m8": "npx tsx --test tests/e2e/m8-gui-clean-install.e2e.test.ts"
+    "test:m8": "npx tsx --test tests/e2e/m8-gui-clean-install.e2e.test.ts",
+    "test:m9-updater": "npx tsx --test tests/e2e/m9-updater.e2e.test.ts"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

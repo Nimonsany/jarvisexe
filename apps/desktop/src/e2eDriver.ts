@@ -87,6 +87,11 @@ async function exec(c: Cmd): Promise<string> {
       if (c.text && document.body.innerText.includes(c.text)) return c.text;
     } else if (c.cmd === 'body') {
       return document.body.innerText.slice(0, 12_000);
+    } else if (c.cmd === 'app_version') {
+      // M9 updater E2E: tauri.conf version as the RUNNING app sees it
+      // (proves which build survived an update install + relaunch).
+      const { getVersion } = await import('@tauri-apps/api/app');
+      return await getVersion();
     } else {
       return `unknown cmd: ${c.cmd}`;
     }
