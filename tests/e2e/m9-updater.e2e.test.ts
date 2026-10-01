@@ -353,6 +353,10 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     await navSettings();
     const pidsBefore = guiPids();
     assert.ok(pidsBefore.length >= 1, 'gui running before update');
+    // pre-restart page load time: the post-restart floor must sit BETWEEN the old
+    // page load and the new page load — a Date.now() floor (set only after we
+    // detect the relaunch) would also reject the fresh page, starving every cmd
+    const preRestartT = getsByKey.get(lastGetKey)?.pageT ?? 0;
     await clickCheck();
     // forensics: what state did the click leave the page in? 'Checking…' alive +
     // empty storage = check() invoked and hanging; empty body = page crashed;
@@ -406,8 +410,8 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     if (body) console.log('  UI body after pid change: ' + body.replace(/\s+/g, ' ').slice(0, 400));
     const v = plistVer();
     if (v !== '0.1.1') throw new Error(`relaunch without install — bundle version still ${v} | last ui: ${lastMsg || 'none'} | pkg GET logged above | UI: ${(body ?? 'no driver').replace(/\s+/g, ' ').slice(0, 200)}`);
-    disarmFocusGuard(); armFocusGuard(); // stale-page floor: only post-restart polls count
-    resyncPages();
+    disarmFocusGuard(); armFocusGuard();
+    if (preRestartT) pageFloor = preRestartT + 1; else resyncPages();
     } finally {
       clearInterval(sniff);
       console.log('  P2 peers (STATE ADDR): ' + ([...peers].join(' | ') || 'none'));
