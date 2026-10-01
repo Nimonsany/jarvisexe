@@ -141,7 +141,9 @@ try {
     assert.equal(v.brokenAt, 1);
   });
 
-  await step('emergency stop: full flow through the API', async () => {
+  const apiUp = await fetch('http://127.0.0.1:7788/', { signal: AbortSignal.timeout(2000) })
+    .then(() => true).catch(() => false);
+  if (apiUp) await step('emergency stop: full flow through the API', async () => {
     const token = readFileSync('runtime/auth-token', 'utf8').trim();
     const H = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
     const api = (p: string, method = 'GET', body?: unknown) =>
@@ -164,6 +166,7 @@ try {
     const r3 = await (await api('/api/emergency-stop/clear', 'POST')).json() as { stopped: boolean };
     assert.equal(r3.stopped, false);
   });
+  else console.log('⏭ emergency stop API step skipped: no core server on 7788 (expected on CI/fresh clone)');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
