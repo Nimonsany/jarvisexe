@@ -1,0 +1,36 @@
+=== codesign -dv --verbose=4 (ad-hoc evidence, M9 Phase 7) ===
+Executable=/Users/nimon/Desktop/Jarvisexe/jarvis-orchestrator/apps/desktop/src-tauri/target/release/bundle/macos/JARVIS.app/Contents/MacOS/jarvis-desktop
+Identifier=app.jarvis.orchestrator
+Format=app bundle with Mach-O thin (x86_64)
+CodeDirectory v=20400 size=97904 flags=0x2(adhoc) hashes=3053+3 location=embedded
+VersionPlatform=1
+VersionMin=658688
+VersionSDK=852736
+Hash type=sha256 size=32
+CandidateCDHash sha256=d8f38b4cd529dbe7125d02bef239d4d4c8c1b3b7
+CandidateCDHashFull sha256=d8f38b4cd529dbe7125d02bef239d4d4c8c1b3b78a84e7789621bd9b53d5a395
+Hash choices=sha256
+CMSDigest=d8f38b4cd529dbe7125d02bef239d4d4c8c1b3b78a84e7789621bd9b53d5a395
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=9502720
+Executable Segment flags=0x1
+Page size=4096
+Launch Constraints:
+	None
+CDHash=d8f38b4cd529dbe7125d02bef239d4d4c8c1b3b7
+Signature=adhoc
+Info.plist entries=14
+TeamIdentifier=not set
+Sealed Resources version=2 rules=13 files=180
+Internal requirements count=0 size=12
+
+=== spctl -a -t exec -vv (notarization/Gatekeeper verdict) ===
+apps/desktop/src-tauri/target/release/bundle/macos/JARVIS.app: rejected
+
+=== codesign --verify --strict ===
+verify: OK
+
+=== updater bundle signature (first 40 chars) ===
+dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBm…
+Captured: 2026-10-01T09:03:54Z — build dfe3b21, bundle macos/JARVIS.app
