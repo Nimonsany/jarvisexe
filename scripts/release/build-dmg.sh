@@ -7,6 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 VER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+# createUpdaterArtifacts: true requires the private key for ANY bundled build
+if [ -f "$HOME/.jarvis/keys/updater.key" ]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$HOME/.jarvis/keys/updater.key")"
+fi
 APP=apps/desktop/src-tauri/target/release/bundle/macos/JARVIS.app
 DMG_DIR=apps/desktop/src-tauri/target/release/bundle/dmg
 DMG="$DMG_DIR/JARVIS_${VER}_x64.dmg"

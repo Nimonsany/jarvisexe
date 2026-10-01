@@ -61,7 +61,9 @@ jobs:
           cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
           chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
       - name: Build app
-        run: npx tauri build --bundles app
+        # validation build only: skip updater artifacts (they require TAURI_SIGNING_PRIVATE_KEY;
+        # updater .app.tar.gz + .sig are produced by release.yml which has the secret)
+        run: npx tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
         working-directory: apps/desktop/src-tauri
       - uses: actions/upload-artifact@v4
         with:
