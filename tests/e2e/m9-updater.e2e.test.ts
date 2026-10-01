@@ -29,7 +29,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const ROOT = process.env.M9_ROOT || `/tmp/jarvis-m9-upd-${process.pid}`;
+// /private/tmp, not /tmp: macOS tauri-utils StartingBinary rejects current_exe()
+// paths containing symlinks (/tmp → /private/tmp), which makes updater check() fail
+const ROOT = process.env.M9_ROOT || `/private/tmp/jarvis-m9-upd-${process.pid}`;
 const PORT = Number(process.env.M9_PORT || 7793);
 // core on its own port: the harness already owns PORT, and the m7 script binds
 // health to M7_PORT — sharing one port made the core lose the bind to the harness
