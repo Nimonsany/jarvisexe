@@ -177,7 +177,18 @@ async function cmd(c: Omit<HCmd, 'id'>, timeoutSec: number): Promise<string> {
   const i = pending.findIndex((p) => p.id === id);
   if (i >= 0) pending.splice(i, 1);
   const liveness = lastGetAt ? ` — driver last GET ${Math.round((Date.now() - lastGetAt) / 1000)}s ago via ${lastGetKey}` : ' — driver never polled';
-  throw new Error(`harness timeout (${timeoutSec}s): ${c.cmd} sel=${c.sel ?? '-'} text=${c.text ?? '-'}${liveness}`);
+  // forensics: what does the page actually show when a wait times out?
+  let stuck = '';
+  try {
+    const bid = `stuck${++cmdSeq}`;
+    pending.push({ cmd: 'wait', id: bid });
+    const t0 = Date.now();
+    while (Date.now() - t0 < 4000 && !finished.get(bid)) await sleep(150);
+    const b = finished.get(bid); finished.delete(bid);
+    if (b?.ok) stuck = ` | body: ${JSON.stringify((b.value ?? '').replace(/\s+/g, ' ').slice(0, 300))}`;
+  } catch { /* ignore */ }
+  try { execFileSync('screencapture', ['-x', `/tmp/m9-stuck-${cmdSeq}.png`], { timeout: 5000, stdio: 'ignore' }); } catch { /* ignore */ }
+  throw new Error(`harness timeout (${timeoutSec}s): ${c.cmd} sel=${c.sel ?? '-'} text=${c.text ?? '-'}${liveness}${stuck}`);
 }
 
 /** Fire-and-forget variant: /done may be lost when the command's last act is
