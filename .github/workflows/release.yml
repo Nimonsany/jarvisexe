@@ -78,6 +78,10 @@ jobs:
           APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
           codesign -dv "$APP" > dist/macos-codesign.txt 2>&1 || true
           echo "VER=$VER ARCH=$ARCH" >> "$GITHUB_ENV"
+      - name: Build info (manifest)
+        run: python3 scripts/release/build-info.py macos "$ARCH"
+      - name: Artifact inspection (Phase 26)
+        run: python3 scripts/release/inspect-artifact.py dist/*.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-macos
@@ -127,6 +131,14 @@ jobs:
           Copy-Item $nsisSig.FullName "dist/JARVIS_${ver}_x64-setup.exe.sig"
           $msi = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) { Copy-Item $msi.FullName "dist/JARVIS_${ver}_x64.msi" } else { Write-Warning "MSI not produced (secondary)" }
+      - name: Build info (manifest)
+        shell: pwsh
+        run: python scripts/release/build-info.py windows x64
+      - name: Artifact inspection (Phase 26)
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist/*.exe, dist/*.msi -ErrorAction SilentlyContinue | ForEach-Object FullName
+          python scripts/release/inspect-artifact.py $files
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-windows
@@ -170,6 +182,10 @@ jobs:
           cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig "dist/JARVIS_${VER}_amd64.AppImage.sig"
           cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb "dist/JARVIS_${VER}_amd64.deb"
           file dist/* > dist/build-filetypes.txt
+      - name: Build info (manifest)
+        run: python3 scripts/release/build-info.py linux amd64
+      - name: Artifact inspection (Phase 26)
+        run: python3 scripts/release/inspect-artifact.py dist/*.AppImage dist/*.deb
       - uses: actions/upload-artifact@v4
         with:
           name: jarvis-linux
@@ -225,6 +241,8 @@ jobs:
                     open('dist/latest.json', 'w'), indent=2)
           print('latest.json written:', ver, sorted(plats))
           PY
+      - name: Release manifest (Phase 22)
+        run: python3 scripts/release/release-manifest.py dist "$GITHUB_REF_NAME"
       - name: SHA256 checksums (verify before upload)
         run: |
           cd dist
