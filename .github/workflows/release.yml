@@ -42,6 +42,8 @@ jobs:
     name: macOS DMG
     runs-on: macos-latest
     needs: test
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -68,6 +70,10 @@ jobs:
           case "$TRIPLE" in aarch64-apple-darwin) ARCH=arm64;; x86_64-apple-darwin) ARCH=x86_64;; *) ARCH="$TRIPLE";; esac
           mkdir -p dist
           cp apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg "dist/JARVIS_${VER}_${ARCH}.dmg"
+          # updater artifacts (createUpdaterArtifacts) — required for latest.json
+          TGZ=$(ls apps/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz | head -1)
+          cp "$TGZ" "dist/JARVIS_${VER}_macos-${ARCH}.app.tar.gz"
+          cp "$TGZ.sig" "dist/JARVIS_${VER}_macos-${ARCH}.app.tar.gz.sig"
           # signing evidence (ad-hoc/unsigned vs Developer ID)
           APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
           codesign -dv "$APP" > dist/macos-codesign.txt 2>&1 || true
@@ -82,6 +88,8 @@ jobs:
     name: Windows NSIS + MSI
     runs-on: windows-latest
     needs: test
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -114,6 +122,9 @@ jobs:
           $nsis = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
           if (-not $nsis) { Write-Error "NSIS installer not produced"; exit 1 }
           Copy-Item $nsis.FullName "dist/JARVIS_${ver}_x64-setup.exe"
+          $nsisSig = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/nsis/*.exe.sig -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $nsisSig) { Write-Error "NSIS updater signature (.sig) missing — updater build not signed"; exit 1 }
+          Copy-Item $nsisSig.FullName "dist/JARVIS_${ver}_x64-setup.exe.sig"
           $msi = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) { Copy-Item $msi.FullName "dist/JARVIS_${ver}_x64.msi" } else { Write-Warning "MSI not produced (secondary)" }
       - uses: actions/upload-artifact@v4
@@ -126,6 +137,8 @@ jobs:
     name: Linux AppImage + DEB
     runs-on: ubuntu-latest
     needs: test
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -154,6 +167,7 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then VER="${GITHUB_REF_NAME#v}"; else VER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version"); fi
           mkdir -p dist
           cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage "dist/JARVIS_${VER}_amd64.AppImage"
+          cp apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig "dist/JARVIS_${VER}_amd64.AppImage.sig"
           cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb "dist/JARVIS_${VER}_amd64.deb"
           file dist/* > dist/build-filetypes.txt
       - uses: actions/upload-artifact@v4
@@ -175,6 +189,42 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Updater metadata (static latest.json)
+        env:
+          RELEASE_BASE: https://github.com/${{ github.repository }}/releases/download
+        run: |
+          python3 - <<'PY'
+          import json, glob, os
+          tag = os.environ['GITHUB_REF_NAME']
+          ver = tag[1:] if tag.startswith('v') else tag
+          base = os.environ['RELEASE_BASE'] + '/' + tag
+          names = sorted(os.path.basename(f) for f in glob.glob('dist/*'))
+          def pick(suffix, arch_hint=None):
+              for n in names:
+                  if n.endswith(suffix) and (arch_hint is None or arch_hint in n):
+                      return n
+              return None
+          plats = {}
+          mac = pick('.app.tar.gz')
+          nsis = pick('_x64-setup.exe')
+          ai = pick('_amd64.AppImage')
+          if mac and os.path.exists(f'dist/{mac}.sig'):
+              arch = 'aarch64' if 'arm64' in mac else 'x86_64'
+              plats[f'darwin-{arch}'] = {'url': f'{base}/{mac}',
+                                          'signature': open(f'dist/{mac}.sig').read().strip()}
+          if nsis and os.path.exists(f'dist/{nsis}.sig'):
+              plats['windows-x86_64'] = {'url': f'{base}/{nsis}',
+                                          'signature': open(f'dist/{nsis}.sig').read().strip()}
+          if ai and os.path.exists(f'dist/{ai}.sig'):
+              plats['linux-x86_64'] = {'url': f'{base}/{ai}',
+                                        'signature': open(f'dist/{ai}.sig').read().strip()}
+          missing = [k for k in ('darwin-aarch64', 'windows-x86_64', 'linux-x86_64') if k not in plats]
+          if missing:
+              raise SystemExit(f'missing updater platform entries: {missing}')
+          json.dump({'version': ver, 'notes': f'JARVIS {ver}', 'platforms': plats},
+                    open('dist/latest.json', 'w'), indent=2)
+          print('latest.json written:', ver, sorted(plats))
+          PY
       - name: SHA256 checksums (verify before upload)
         run: |
           cd dist

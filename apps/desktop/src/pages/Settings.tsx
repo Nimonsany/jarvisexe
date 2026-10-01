@@ -8,6 +8,8 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
   const [msg, setMsg] = useState<string | null>(null);
   const [tokenShown, setTokenShown] = useState<string | null>(null);
   const [deviceToken, setTokenInput] = useState('');
+  const [updMsg, setUpdMsg] = useState<string | null>(null);
+  const [updBusy, setUpdBusy] = useState(false);
   useEffect(() => { if (!draft && settings) setDraft(settings); }, [settings, draft]);
   if (!draft) return <div className="page"><p className="muted">Loading settings…</p></div>;
 
@@ -102,6 +104,26 @@ export function SettingsPage({ settings, onSaved }: { settings: Settings | null;
         <button onClick={saveDeviceToken}>Save device token</button>
       </div>
       <p className="muted">Secrets are never stored here. ChatGPT login lives only in the dedicated browser profile.</p>
+      <h2>Updates</h2>
+      <p className="muted">Signed updates only (Ed25519 signature verified against the key embedded in this app).</p>
+      <div className="controls">
+        <button disabled={updBusy} onClick={async () => {
+          setUpdBusy(true); setUpdMsg(null);
+          try {
+            const { check } = await import('@tauri-apps/plugin-updater');
+            const { relaunch } = await import('@tauri-apps/plugin-process');
+            const u = await check();
+            if (!u) { setUpdMsg('Up to date.'); return; }
+            setUpdMsg(`Update ${u.version} available — downloading…`);
+            await u.downloadAndInstall();
+            setUpdMsg(`Installed ${u.version}. Relaunching…`);
+            await relaunch();
+          } catch (e) {
+            setUpdMsg(`Update check failed: ${e instanceof Error ? e.message : e}`);
+          } finally { setUpdBusy(false); }
+        }}>{updBusy ? 'Checking…' : 'Check for updates'}</button>
+        {updMsg && <span className="muted">{updMsg}</span>}
+      </div>
     </div>
   );
 }

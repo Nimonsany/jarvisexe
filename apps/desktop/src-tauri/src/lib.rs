@@ -32,6 +32,13 @@ pub fn run() {
         .setup({
             let core_child = core_child.clone();
             move |app| {
+                // M9: updater + process (relaunch after update) plugins.
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())
+                    .expect("updater plugin init");
+                app.handle()
+                    .plugin(tauri_plugin_process::init())
+                    .expect("process plugin init");
                 // E2E driver bridge (M8): env-gated ONLY — when JARVIS_E2E carries
                 // the harness URL, inject it for the in-page driver. Production
                 // runs never set the env, so no bridge object ever exists there.

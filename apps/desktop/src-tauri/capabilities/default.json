@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default capability for the main window (M9: updater + relaunch).",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "updater:default",
+    "process:default"
+  ]
+}

@@ -25,7 +25,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": [
+      "app"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -40,6 +42,15 @@
       "../../../dist-core/server.js": "core-runtime/server.js",
       "../../../dist-core/node_modules/": "core-runtime/node_modules/",
       "../../../dist-core/build-manifest.json": "core-runtime/build-manifest.json"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgwRTY2QkYxRUY4RjE3RUEKUldUcUY0L3Y4V3ZtZ09BSTFyN1dFMnR1elM1UjFWbXg4aDllZ1h0c0hoTWQwOUU2NkRmSUJPaHYK",
+      "endpoints": [
+        "https://github.com/Nimonsany/jarvisexe/releases/latest/download/latest.json"
+      ]
     }
   }
 }
