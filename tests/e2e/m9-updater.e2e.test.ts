@@ -21,7 +21,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, cpSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, chmodSync, readFileSync, rmSync, cpSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -230,7 +230,9 @@ test('M9 updater E2E — signed A/B update, tamper reject, downgrade/platform gu
     sh('npx', ['tsx', 'packages/core/scripts/build-core-runtime.mts'], { timeout: 600_000 });
     const triple = sh('rustc', ['-vV']).split('\n').find((l) => l.startsWith('host: '))!.split(' ')[1];
     mkdirSync(path.join(APP_DIR, 'binaries'), { recursive: true });
-    cpSync(path.join(REPO, 'dist-core/jarvis-core'), path.join(APP_DIR, 'binaries', `jarvis-core-${triple}`), { mode: 0o755 });
+    // node cpSync mode must be <= 7; set exec bit separately
+    cpSync(path.join(REPO, 'dist-core/jarvis-core'), path.join(APP_DIR, 'binaries', `jarvis-core-${triple}`));
+    chmodSync(path.join(APP_DIR, 'binaries', `jarvis-core-${triple}`), 0o755);
 
     // build A (current version 0.1.0 from tauri.conf) with the localhost endpoint
     sh('npx', ['tauri', 'build', '--bundles', 'app', '--config', updCfg()], { cwd: APP_DIR, env: signEnv, timeout: 3_600_000 });

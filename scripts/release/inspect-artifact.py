@@ -16,12 +16,12 @@ import tempfile
 
 # real private-key PEM blocks (not regex-source text: requires base64 body + END line)
 PEM = re.compile(rb'-----BEGIN [A-Z ]*PRIVATE KEY-----\s*\n[A-Za-z0-9+/=\s]{64,}-----END [A-Z ]*PRIVATE KEY-----')
-# raw credentials that never belong in artifacts
+# raw credentials that never belong in artifacts (all compiled: rx.search needs re.Pattern)
 BYTES = [
     ('RSA/OPENSSH private key block', PEM),
-    ('possible AWS access key id', rb'AKIA[0-9A-Z]{16}'),
-    ('possible GitHub token', rb'ghp_[A-Za-z0-9]{36}'),
-    ('dotenv secret assignment', rb'(?m)^(?:OPENAI|ANTHROPIC|GITHUB_TOKEN|TAURI_SIGNING_PRIVATE_KEY)_KEY\s*=\s*\S'),
+    ('possible AWS access key id', re.compile(rb'AKIA[0-9A-Z]{16}')),
+    ('possible GitHub token', re.compile(rb'ghp_[A-Za-z0-9]{36}')),
+    ('dotenv secret assignment', re.compile(rb'(?m)^(?:OPENAI|ANTHROPIC|GITHUB_TOKEN|TAURI_SIGNING_PRIVATE_KEY)_KEY\s*=\s*\S')),
 ]
 
 NAME_BAD = re.compile(
