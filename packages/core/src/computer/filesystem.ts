@@ -123,12 +123,16 @@ export class FilesystemController {
     return this.safe('filesystem', 'rename', t0, () => { renameSync(p, d); if (!existsSync(d)) throw new Error('rename verification failed'); }, { path: p, destination: d, verified: true });
   }
 
-  /** Default delete = move to Trash (macOS ~/.Trash). Never rm -rf. */
+  /** Default delete = move to Trash (macOS ~/.Trash; Linux freedesktop XDG Trash). Never rm -rf. */
   'delete-to-trash'(args: { path: string }): ActionResult {
     const t0 = Date.now();
     const p = canonicalize(args.path);
-    const trash = path.join(os.homedir(), '.Trash', path.basename(p) + '-' + Date.now());
+    const trashDir = process.platform === 'darwin'
+      ? path.join(os.homedir(), '.Trash')
+      : path.join(os.homedir(), '.local', 'share', 'Trash', 'files');
+    const trash = path.join(trashDir, path.basename(p) + '-' + Date.now());
     return this.safe('filesystem', 'delete-to-trash', t0, () => {
+      mkdirSync(trashDir, { recursive: true });
       renameSync(p, trash);
       if (existsSync(p)) throw new Error('trash verification failed: source still present');
       return trash;
