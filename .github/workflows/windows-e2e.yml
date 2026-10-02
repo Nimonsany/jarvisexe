@@ -154,8 +154,12 @@ jobs:
           $realExe = Get-ChildItem "$nm/opencode-ai" -Recurse -Filter "opencode.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $realExe) { $realExe = Get-ChildItem "$env:USERPROFILE\.opencode\bin" -Filter "opencode.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 }
           if ($realExe) {
-            Copy-Item $realExe.FullName (Join-Path $env:INSTALL_DIR "opencode.exe")
-            Write-Host "opencode real binary copied to install dir: $($realExe.FullName)"
+            # copy to opencode's standard user-local install location — the
+            # discovery's user-local candidate (with .exe variant probing, M10)
+            # finds it at task time; the running core re-probes per task
+            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.opencode\bin" | Out-Null
+            Copy-Item $realExe.FullName "$env:USERPROFILE\.opencode\bin\opencode.exe"
+            Write-Host "opencode real binary installed to user-local: $env:USERPROFILE\.opencode\bin\opencode.exe"
           } else {
             Write-Host "no opencode.exe found — shim layout (graceful path will be tested):"
             Get-ChildItem C:\npm\prefix\opencode* -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "shim: $($_.Name)" }
