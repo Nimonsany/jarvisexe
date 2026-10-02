@@ -18,10 +18,40 @@ PASS=""; FAIL=""
 ok()   { PASS="$PASS|$1"; echo "✔ $1"; }
 fail() { FAIL="$FAIL|$1"; echo "✖ $1"; }
 
+
+# HTTP helper via python3 — the clean ubuntu:24.04 image has no curl
+http_get() { # $1 = url, $2 = token (optional)
+  docker exec "$CN" python3 -c "
+import urllib.request,sys
+req=urllib.request.Request(sys.argv[1])
+import os
+tok=sys.argv[2] if len(sys.argv)>2 else ''
+if tok: req.add_header('Authorization','Bearer '+tok)
+print(urllib.request.urlopen(req,timeout=5).read().decode())
+" "$1" "${2:-}" 2>/dev/null
+}
+http_post() { # $1 = url, $2 = json body, $3 = token
+  docker exec "$CN" python3 -c "
+import urllib.request,sys
+req=urllib.request.Request(sys.argv[1],data=sys.argv[2].encode(),method='POST')
+req.add_header('Authorization','Bearer '+sys.argv[3])
+req.add_header('Content-Type','application/json')
+print(urllib.request.urlopen(req,timeout=10).read().decode())
+" "$1" "$2" "$3" 2>/dev/null
+}
+probe() { docker exec "$CN" python3 -c "
+import socket,sys
+s=socket.socket();s.settimeout(3)
+try: s.connect(('127.0.0.1',int(sys.argv[1])));print('up')
+except Exception: print('down')
+" "$1" 2>/dev/null
+}
+
 # ---------- Phase 12: DEB on clean Ubuntu ----------
 echo "=== Phase 12: DEB clean-machine E2E (ubuntu:24.04) ==="
 docker rm -f j10-deb >/dev/null 2>&1
 docker run -d --name j10-deb ubuntu:24.04 sleep infinity >/dev/null || { echo "LINUX_E2E_FAIL: docker run failed"; exit 1; }
+CN=j10-deb
 docker cp "$DEB" j10-deb:/tmp/jarvis.deb
 
 docker exec j10-deb bash -c '
@@ -37,7 +67,7 @@ docker exec j10-deb bash -c '
 DPKG_RC=$?
 tail -12 "$OUT/deb-install.log"
 if [ $DPKG_RC -eq 0 ] && docker exec j10-deb dpkg -s jarvis >/dev/null 2>&1; then
-  ok "DEB install + dependency resolution (webk it2gtk/gtk3 declared deps)"
+  ok "DEB install + dependency resolution (webkit2gtk/gtk3 declared deps)"
 else
   fail "DEB install"
 fi
@@ -49,34 +79,30 @@ if [ -n "$CORE" ]; then
   docker exec j10-deb bash -c "
     JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state nohup $CORE >/tmp/j10core.log 2>&1 </dev/null &
     for i in \$(seq 1 24); do
-      curl -s -m 3 http://127.0.0.1:$PORT/health >/dev/null 2>&1 && break
       sleep 5
     done
-    curl -s -m 3 http://127.0.0.1:$PORT/health
   " > "$OUT/deb-core-health.log" 2>&1
+  sleep 2
+  http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/deb-health.json"
   if grep -q '"core":"online"' "$OUT/deb-core-health.log"; then
     ok "DEB core startup + health"
-    TOKEN=$(docker exec j10-deb curl -s -m 3 "http://127.0.0.1:$PORT/api/bootstrap" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
-    VER=$(docker exec j10-deb curl -s -m 3 "http://127.0.0.1:$PORT/api/version" 2>/dev/null | head -c 120)
+    TOKEN=$(http_get "http://127.0.0.1:$PORT/api/bootstrap" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+    VER=$(http_get "http://127.0.0.1:$PORT/api/version" | head -c 120)
     echo "handshake: $VER"
     if [ -n "$TOKEN" ] && echo "$VER" | grep -q "jarvis-core\|core"; then
       ok "DEB UI-Core handshake (identity via /api/version)"
       # smoke task — graceful on a clean machine (no opencode/chatgpt credentials)
-      SMOKE=$(docker exec j10-deb bash -c "
-        curl -s -m 10 -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' \
-          -d '{\"request\":\"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.\",\"project\":\"/tmp/j10work\"}' \
-          http://127.0.0.1:$PORT/api/tasks
-      ")
+      SMOKE=$(http_post "http://127.0.0.1:$PORT/api/tasks" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
       TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       echo "smoke task: $TID"
       if [ -n "$TID" ]; then
         STATUS=""
         for i in $(seq 1 40); do
           sleep 10
-          STATUS=$(docker exec j10-deb curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/task/$TID" | python3 -c "import sys,json;print(json.load(sys.stdin)['task']['status'])" 2>/dev/null)
+          STATUS=$(http_get "http://127.0.0.1:$PORT/api/task/$TID" "$TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['task']['status'])" 2>/dev/null)
           case "$STATUS" in COMPLETED|FAILED|CANCELLED|WAITING_FOR_OWNER) break;; esac
         done
-        ERR=$(docker exec j10-deb curl -s -m 5 -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/task/$TID" | python3 -c "import sys,json;print(json.load(sys.stdin)['task'].get('last_error','')[:160])" 2>/dev/null)
+        ERR=$(http_get "http://127.0.0.1:$PORT/api/task/$TID" "$TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['task'].get('last_error','')[:160])" 2>/dev/null)
         echo "smoke terminal: $STATUS last_error: $ERR"
         case "$STATUS" in
           COMPLETED) ok "DEB smoke task completed";;
@@ -109,6 +135,7 @@ docker rm -f j10-deb >/dev/null 2>&1
 echo "=== Phases 10-11: AppImage clean-machine E2E (ubuntu:24.04) ==="
 docker rm -f j10-appimage >/dev/null 2>&1
 docker run -d --name j10-appimage ubuntu:24.04 sleep infinity >/dev/null || { echo "LINUX_E2E_FAIL: docker run failed"; exit 1; }
+CN=j10-appimage
 docker cp "$APPIMAGE" j10-appimage:/tmp/jarvis.AppImage
 docker exec j10-appimage bash -c '
   set -e
@@ -131,11 +158,11 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
     chmod +x $CORE2 2>/dev/null || true
     JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state2 nohup $CORE2 >/tmp/j10core2.log 2>&1 </dev/null &
     for i in \$(seq 1 24); do
-      curl -s -m 3 http://127.0.0.1:$PORT/health >/dev/null 2>&1 && break
       sleep 5
     done
-    curl -s -m 3 http://127.0.0.1:$PORT/health
   " > "$OUT/appimage-core-health.log" 2>&1
+  sleep 2
+  http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/appimage-health.json"
   if grep -q '"core":"online"' "$OUT/appimage-core-health.log"; then
     ok "AppImage core startup + health (packaged runtime, no source tree)"
   else
@@ -151,6 +178,6 @@ echo ""
 echo "=== LINUX E2E SUMMARY ==="
 echo "PASS: $(echo "$PASS" | tr '|' '\n' | grep -c .)"
 echo "FAIL: $(echo "$FAIL" | tr '|' '\n' | grep -c .)"
-for f in $(echo "$PASS" | tr '|' '\n' | grep .); do echo "  ✔ $f"; done
-for f in $(echo "$FAIL" | tr '|' '\n' | grep .); do echo "  ✖ $f"; done
+echo "$PASS" | tr '|' '\n' | grep . | while IFS= read -r f; do echo "  ✔ $f"; done
+echo "$FAIL" | tr '|' '\n' | grep . | while IFS= read -r f; do echo "  ✖ $f"; done
 [ -z "$FAIL" ] && echo "LINUX_E2E_PASS: yes" || echo "LINUX_E2E_PASS: no"
