@@ -159,7 +159,7 @@ jobs:
             request = "Create a temporary file named j10-windows-ok.txt in the project directory containing exactly the text JARVIS_WINDOWS_RUNTIME_OK (plain, unquoted). Create no other files."
             project = $env:RUNNER_TEMP
           } | ConvertTo-Json
-          $task = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Method Post -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 30
+          $task = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task" -Method Post -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 30
           $id = $task.id
           Write-Host "task created: $id"
           "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
