@@ -78,7 +78,8 @@ CORE=$(docker exec j10-deb bash -lc 'dpkg -L jarvis | grep -E "jarvis-core$|jarv
 echo "deb core sidecar: $CORE"
 if [ -n "$CORE" ]; then
   docker exec j10-deb bash -c "
-    JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state nohup $CORE >/tmp/j10core.log 2>&1 </dev/null &
+    JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state setsid $CORE >/tmp/j10core.log 2>&1 </dev/null &
+    echo $! > /tmp/j10core.pid
     for i in \$(seq 1 24); do
       sleep 5
     done
@@ -117,8 +118,17 @@ if [ -n "$CORE" ]; then
       fail "DEB handshake"
     fi
     # stop + restart the core (Phase 12 restart)
-    docker exec j10-deb bash -c 'pkill -f jarvis-core; sleep 2; pgrep -f jarvis-core | wc -l'
-    ok "DEB core stop"
+    docker exec j10-deb bash -c '
+      PID=$(cat /tmp/j10core.pid 2>/dev/null)
+      if [ -n "$PID" ]; then
+        # ownership-verified: argv must prove it is this core before group kill
+        ps -ww -p "$PID" -o args= 2>/dev/null | grep -q "core-runtime/server.js" && kill -- -"$PID" 2>/dev/null || kill "$PID" 2>/dev/null
+      fi
+      sleep 2
+      LEFT=$(ps -ww -eo args= | grep -c "core-runtime/server.js" || true)
+      echo "core processes left: $LEFT"
+    '
+    ok "DEB core stop (ownership-verified group kill — no fuzzy matching)"
   else
     fail "DEB core startup (see $OUT/deb-core-health.log)"
     cat "$OUT/deb-core-health.log" | tail -5
@@ -160,7 +170,8 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
   ok "AppImage chmod+extract (architecture amd64, sidecar + manifest present)"
   docker exec j10-appimage bash -c "
     chmod +x $CORE2 2>/dev/null || true
-    JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state2 nohup $CORE2 >/tmp/j10core2.log 2>&1 </dev/null &
+    JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state2 setsid $CORE2 >/tmp/j10core2.log 2>&1 </dev/null &
+    echo $! > /tmp/j10core2.pid
     for i in \$(seq 1 24); do
       sleep 5
     done
