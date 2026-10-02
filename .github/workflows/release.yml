@@ -122,7 +122,14 @@ jobs:
         run: |
           $triple = (((rustc -vV) -match '^host: ') -split ' ')[1]
           New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries | Out-Null
-          Copy-Item dist-core/jarvis-core.cmd "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe"
+          # M10 Phase 6: a batch script renamed .exe cannot be spawned by CreateProcess
+          # (ERROR_BAD_EXE_FORMAT) — confirmed by the Windows clean-machine E2E — so the
+          # sidecar is a REAL .exe launcher (csc ships with every Windows runner) with a
+          # Job Object (kill-on-close) for orphan-safe app-quit.
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /nologo /out:"apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe" scripts/release/jarvis-core-launcher.cs
+          if ($LASTEXITCODE -ne 0) { Write-Error "csc compile failed"; exit 1 }
+          Get-Item "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe" | ForEach-Object { Write-Host "sidecar built: $($_.Name) $($_.Length) bytes" }
       - name: Build NSIS (primary)
         run: npx tauri build --bundles nsis --config '{"bundle":{"windows":{"nsis":{"installMode":"currentUser"}}}}'
         working-directory: apps/desktop/src-tauri
