@@ -1,7 +1,19 @@
-import { chromium, type BrowserContext, type Page } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import type { BrowserContext, Page } from 'playwright';
 import type { ProcessRegistry } from '../computer/registry.js';
+
+// Lazy playwright import: playwright refuses to load on Node < 20 at import
+// time, which killed the WHOLE core on distro node (ubuntu 24.04 = 18.19.1 —
+// Linux E2E evidence). Importing at launch keeps the core (and opencode
+// tasks) running everywhere; only ChatGPT automation degrades, with an
+// actionable error.
+type PlaywrightModule = typeof import('playwright');
+let playwrightModule: PlaywrightModule | null = null;
+async function loadChromium(): Promise<PlaywrightModule['chromium']> {
+  if (!playwrightModule) playwrightModule = await import('playwright');
+  return playwrightModule.chromium;
+}
 
 const CHATGPT_URL = 'https://chatgpt.com/';
 // Prompt box: ChatGPT uses a contenteditable div#prompt-textarea (textarea historically).
@@ -23,7 +35,7 @@ export class ChatGPTBrowser {
   async launch(): Promise<void> {
     if (this.ctx) return;
     const before = this.directChildren();
-    this.ctx = await chromium.launchPersistentContext(this.profileDir, {
+    this.ctx = await (await loadChromium()).launchPersistentContext(this.profileDir, {
       headless: this.headless,
       channel: this.channel,
       viewport: { width: 1280, height: 900 },
