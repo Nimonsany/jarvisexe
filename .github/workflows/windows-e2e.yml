@@ -146,8 +146,20 @@ jobs:
         if: env.CORE_UP == 'true'
         run: |
           npm install -g opencode-ai 2>&1 | Select-Object -Last 2
-          $oc = (Get-Command opencode -ErrorAction SilentlyContinue)
-          if ($oc) { Write-Host "opencode installed: $($oc.Source)" } else { Write-Host "opencode NOT installed (graceful path will be tested)" }
+          # M10: the npm shim is .cmd/.ps1 (unspawnable without shell) and the
+          # discovery's bare names miss Windows forms — find the REAL .exe and
+          # copy it to the install dir (the discovery's "bundled" candidate,
+          # probed fresh at every task start — no core restart needed).
+          $nm = (npm root -g)
+          $realExe = Get-ChildItem "$nm/opencode-ai" -Recurse -Filter "opencode.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $realExe) { $realExe = Get-ChildItem "$env:USERPROFILE\.opencode\bin" -Filter "opencode.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          if ($realExe) {
+            Copy-Item $realExe.FullName (Join-Path $env:INSTALL_DIR "opencode.exe")
+            Write-Host "opencode real binary copied to install dir: $($realExe.FullName)"
+          } else {
+            Write-Host "no opencode.exe found — shim layout (graceful path will be tested):"
+            Get-ChildItem C:\npm\prefix\opencode* -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "shim: $($_.Name)" }
+          }
 
       - name: Smoke task — deterministic, harmless (Phase 7 + 18 + 19)
         shell: pwsh

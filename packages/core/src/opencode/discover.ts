@@ -25,6 +25,14 @@ function isExecutable(p: string): boolean {
   } catch { return false; }
 }
 
+/** Windows npm shims are .cmd/.ps1 and real installs are .exe — a bare
+ *  `opencode` name never matches any of them. Probe platform extensions
+ *  (prefer .exe: node spawn without shell cannot run .cmd shims). */
+function candidateVariants(p: string): string[] {
+  if (process.platform === 'win32') return [p + '.exe', p + '.cmd', p];
+  return [p];
+}
+
 /** Ordered candidate list (same order as discovery). Used for search + diagnostics. */
 export function opencodeCandidates(opts: DiscoveryOpts = {}): OpencodeHit[] {
   const env = opts.env ?? process.env;
@@ -47,6 +55,10 @@ export function opencodeCandidates(opts: DiscoveryOpts = {}): OpencodeHit[] {
 }
 
 export function discoverOpencode(opts: DiscoveryOpts = {}): OpencodeHit | null {
-  for (const c of opencodeCandidates(opts)) if (isExecutable(c.path)) return c;
+  for (const c of opencodeCandidates(opts)) {
+    for (const p of candidateVariants(c.path)) {
+      if (isExecutable(p)) return { path: p, source: c.source };
+    }
+  }
   return null;
 }
