@@ -354,10 +354,11 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
       const r = await this.agentProvider.runBotTask(
         bot, task.id, 'final-verification',
         'Adversarial reality check of this completed task: is the claim credible? List any unverified assumptions.',
-        sanitize(context), 180_000,
+        sanitize(context), 300_000, // 300s: cold opencode + thrash can exceed 180s (T6 allows 480)
       );
       await writeFile(path.join(dir, 'bot-review.json'), JSON.stringify({ bot: botId, ok: r.ok, analysis: r.analysis }, null, 2));
-      await this.store.emit(task, 'computer', r.ok ? 'bot.review_completed' : 'bot.review_skipped', r.ok ? 'info' : 'warning', { bot: botId, chars: r.analysis.length }).catch(() => {});
+      await this.store.emit(task, 'computer', r.ok ? 'bot.review_completed' : 'bot.review_skipped', r.ok ? 'info' : 'warning',
+        r.ok ? { bot: botId, chars: r.analysis.length } : { bot: botId, reason: 'bot run not ok', tail: r.analysis.slice(-300) }).catch(() => {});
     } catch (e) {
       await this.store.emit(task, 'computer', 'bot.review_skipped', 'warning', { bot: botId, reason: String(e).slice(0, 200) }).catch(() => {});
     }

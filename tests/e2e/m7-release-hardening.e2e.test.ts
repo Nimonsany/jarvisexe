@@ -255,7 +255,12 @@ test('M7 release hardening E2E', async () => {
       if (!comps.has(want)) console.log(`  note: component '${want}' produced no events (captured: ${[...comps].join(',')})`);
     }
     assert.ok(comps.has('opencode'), 'opencode events captured');
-    await until('bot.review_completed', async () => (await taskOf(smokeTaskId)).events!.some((e) => e.event === 'bot.review_completed'), 480, 10_000);
+    // wait for either outcome — a skip fails fast WITH its reason instead of a blind 480s timeout
+    await until('bot review outcome', async () => (await taskOf(smokeTaskId)).events!.some((e) => e.event === 'bot.review_completed' || e.event === 'bot.review_skipped'), 480, 10_000);
+    const revEvs = (await taskOf(smokeTaskId)).events!.filter((e) => e.event.startsWith('bot.review_'));
+    const completed = revEvs.find((e) => e.event === 'bot.review_completed');
+    const skipped = revEvs.find((e) => e.event === 'bot.review_skipped');
+    assert.ok(completed, `bot review not completed: ${skipped ? JSON.stringify(skipped.data) : 'no bot.review_* event at all'}`);
     REPORTS.t6 = { taskId: smokeTaskId, status: task.status, verification: task.verification_status, components: [...comps], events: evs.length };
   });
 
