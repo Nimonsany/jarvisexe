@@ -78,6 +78,18 @@ export class Orchestrator {
     return task;
   }
 
+  /** Disk wins after every await: pause()/cancel() mutate a *different* in-memory
+   *  copy, so the running loop's stale status would otherwise clobber PAUSED
+   *  with a later transition/save (FR-9/10). True = caller must stop now. */
+  private async diskWins(task: Task): Promise<boolean> {
+    const live = await this.store.load(task.id).catch(() => null);
+    if (live?.status === 'PAUSED' || live?.status === 'CANCELLED') {
+      task.status = live.status; // adopt owner's state; disk already persisted
+      return true;
+    }
+    return false;
+  }
+
   /** RESUME: continue safely from persisted task state.
    *  In-flight loop (paused at a checkpoint): clear flags + set disk EXECUTING —
    *  the loop continues at its next checkpoint. Loop not in-flight: re-enter. */
@@ -136,12 +148,16 @@ export class Orchestrator {
     const task = await this.store.create(ownerRequest, projectDir);
     try {
       await this.chatgpt.launch();
+      if (await this.diskWins(task)) return task; // paused/cancelled during launch
 
       // 1. PLANNING via ChatGPT browser
       await this.store.transition(task, 'PLANNING');
       await this.store.transition(task, 'WAITING_FOR_CHATGPT');
       const plannerPrompt = sanitize(this.opts.plannerPromptTemplate.replace('{{OWNER_REQUEST}}', ownerRequest));
       const planResponse = await this.chatgpt.ask(plannerPrompt);
+      // pause/cancel may have landed while awaiting ChatGPT — the in-memory task
+      // is stale; a transition/save below would clobber PAUSED (FR-9/10)
+      if (await this.diskWins(task)) return task;
       const dir = this.store.taskDir(task.id);
       await writeFile(path.join(dir, 'chatgpt-plan.md'), planResponse);
       // prompt-injection defense: ChatGPT responses are untrusted data
@@ -160,6 +176,12 @@ export class Orchestrator {
       return task;
     } catch (e) {
       task.last_error = String(e);
+      if (await this.diskWins(task)) {
+        // owner paused/cancelled mid-flight — keep THEIR state, record the error,
+        // never overwrite PAUSED with FAILED (stale in-memory status would)
+        await this.store.save(task);
+        return task;
+      }
       if (task.status === 'CANCELLED') {
         await this.store.save(task);
         return task; // cancelled: cancel() already logged it
