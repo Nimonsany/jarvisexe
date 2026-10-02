@@ -127,7 +127,7 @@ jobs:
           # sidecar is a REAL .exe launcher (csc ships with every Windows runner) with a
           # Job Object (kill-on-close) for orphan-safe app-quit.
           $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-          & $csc /nologo /out:"apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe" scripts/release/jarvis-core-launcher.cs
+          & $csc /nologo /out:"apps\desktop\src-tauri\binaries\jarvis-core-$triple.exe" "scripts\release\jarvis-core-launcher.cs"
           if ($LASTEXITCODE -ne 0) { Write-Error "csc compile failed"; exit 1 }
           Get-Item "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe" | ForEach-Object { Write-Host "sidecar built: $($_.Name) $($_.Length) bytes" }
       - name: Build NSIS (primary)
