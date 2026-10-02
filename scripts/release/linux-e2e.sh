@@ -61,6 +61,7 @@ docker exec j10-deb bash -c '
   dpkg -i /tmp/jarvis.deb 2>&1 | tail -5 || true
   echo "--- apt-get -f install (resolves declared deps: webkit2gtk, gtk3) ---"
   DEBIAN_FRONTEND=noninteractive apt-get install -y -f >/dev/null 2>&1
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl >/dev/null 2>&1
   echo "--- installed files (dpkg -L) ---"
   dpkg -L jarvis | head -20
 ' > "$OUT/deb-install.log" 2>&1
@@ -137,6 +138,9 @@ docker rm -f j10-appimage >/dev/null 2>&1
 docker run -d --name j10-appimage ubuntu:24.04 sleep infinity >/dev/null || { echo "LINUX_E2E_FAIL: docker run failed"; exit 1; }
 CN=j10-appimage
 docker cp "$APPIMAGE" j10-appimage:/tmp/jarvis.AppImage
+# the packaged core launcher requires a system Node.js (actionable error when
+# missing — Phase 18) and the test needs curl — install both in the clean image
+docker exec j10-appimage bash -c 'apt-get update -qq >/dev/null 2>&1 && DEBIAN_FRONTEND=noninteractive apt-get install -y curl nodejs >/dev/null 2>&1' || echo "WARN: container package install failed (core may not start — recorded as evidence)"
 docker exec j10-appimage bash -c '
   set -e
   chmod +x /tmp/jarvis.AppImage
