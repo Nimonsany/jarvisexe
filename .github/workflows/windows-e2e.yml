@@ -107,6 +107,24 @@ jobs:
             if ($env:SIDECAR_IS_PE -eq "false") {
               Write-Host "ROOT CAUSE (expected M10 hypothesis): sidecar is a batch script renamed .exe — CreateProcess cannot execute it (ERROR_BAD_EXE_FORMAT)"
             }
+            # diagnostic: run the launcher DIRECTLY, bounded 12s, capture output
+            # (also exercises the Job Object: killing the launcher must kill node)
+            Write-Host "--- launcher direct run (bounded 12s, captured) ---"
+            $env:JARVIS_PORT = "7788"
+            $lp = Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-core.exe") -RedirectStandardError launcher-err.txt -RedirectStandardOutput launcher-out.txt -PassThru -NoNewWindow
+            Start-Sleep -Seconds 12
+            if (-not $lp.HasExited) {
+              Write-Host "launcher still running after 12s — node alive (now killed: job must close too)"
+              Stop-Process -Id $lp.Id -Force
+              Start-Sleep -Seconds 3
+              $nodeAlive = Get-Process -Name "node" -ErrorAction SilentlyContinue
+              if ($nodeAlive) { Write-Host "WARNING: node survived launcher kill — Job Object did not close" }
+              else { Write-Host "node died with launcher kill (Job Object works)" }
+            } else { Write-Host "launcher exited immediately with code $($lp.ExitCode)" }
+            Get-Content launcher-err.txt, launcher-out.txt -ErrorAction SilentlyContinue | Select-Object -First 15 | ForEach-Object { Write-Host "launcher-out: $_" }
+            Get-ChildItem (Join-Path $env:INSTALL_DIR "core-runtime") -ErrorAction SilentlyContinue | Select-Object -First 8 | ForEach-Object { Write-Host "core-runtime: $($_.Name)" }
+            $node = Get-Command node -ErrorAction SilentlyContinue
+            Write-Host "node on PATH: $($node.Source)"
             "CORE_UP=false" | Out-File -FilePath $env:GITHUB_ENV -Append
             exit 0   # record evidence; later steps assert accordingly
           }
