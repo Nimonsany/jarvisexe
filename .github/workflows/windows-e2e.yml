@@ -10,9 +10,14 @@ on:
         description: 'Release tag to test (e.g. v0.1.0-rc5)'
         required: true
         default: 'v0.1.0-rc5'
+      run_id:
+        description: 'Release workflow run id that built the tag artifacts'
+        required: true
+        default: '37037329538'
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   clean-machine-e2e:
@@ -24,12 +29,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download release installer (draft releases need auth)
+      - name: Download release installer (from the release run artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: jarvis-windows
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+
+      - name: Verify downloaded installer
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$env:TAG" -R "$env:GITHUB_REPOSITORY" -p "JARVIS_*_x64-setup.exe" -p "JARVIS_*_x64-setup.exe.sig" -D dist
           Get-ChildItem dist | ForEach-Object { Write-Host "downloaded: $($_.Name) $($_.Length)" }
           if (-not (Get-ChildItem dist/*.exe)) { Write-Error "installer not downloaded"; exit 1 }
 
