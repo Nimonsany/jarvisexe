@@ -164,3 +164,59 @@
   tests env-blocked after tsx3 green run.
 - Test-count note: root tsx suite reports 39 top-level tests / 85 subtests
   across 14 files (baseline counted 32+51 differently — suites evolved).
+
+---
+
+## Phase 36 — Platform verdict evidence (assembled at final HEAD 87a772a; code HEAD 7c23853)
+
+| Platform | Artifacts (rc4) | Signing | E2E on real machine | Verdict |
+|---|---|---|---|---|
+| **macOS (x64 + arm64)** | `JARVIS_0.1.0-rc4_arm64.dmg` + `.app.tar.gz` + updater `.sig` (CI, arm64); x64 DMG built locally for E2E | **Ad-hoc only** (`macos-codesign.txt`); no Developer ID, no notarization | **YES** — m7 13/13, m8 9/9, suite 39/39 incl. real voice, clean-install lifecycle, uninstall clean | **TECHNICALLY PASS — distribution blocked on signing credentials** |
+| **Windows** | `setup.exe` + `.sig`, `.msi` (unsigned) | No Authenticode cert (`.sig` = minisign updater key only) | **NO** — no Windows machine available | **COMPILE-ONLY — not verified for stable** |
+| **Linux (amd64)** | `AppImage` + `.sig`, `.deb` (unsigned) | No GPG/repo signing | **NO** — no Linux machine available | **COMPILE-ONLY — not verified for stable** |
+
+Manifests: `release-manifest.json` + `SHA256SUMS.txt` (17/17 verified) + `sbom.spdx.json` + `latest.json` (3 platforms, updater signatures present).
+
+## Phase 37 — Stable-release gate decision
+
+**READY_FOR_V0.1.0_STABLE: NO**
+
+Reasons (all evidence above):
+1. macOS artifacts are ad-hoc signed only — no Developer ID certificate, no notarization. Other users' Gatekeeper will block/unwarn; only this owner's machine (which granted TCC consent) is verified.
+2. Windows has no Authenticode signing certificate; `.msi`/`.exe` unsigned → SmartScreen/AV friction unmeasured.
+3. Windows and Linux clean-machine E2E was never executed — no such machines available. CI jobs prove compilation only (the exact "compile-only evidence" the gate forbids counting as stable proof).
+4. CI macOS runner is arm64 → `latest.json` carries `darwin-aarch64` only; x64 is verified locally but not shipped in the updater feed.
+5. `v0.1.0-rc4` predates the four root-cause fixes landed after it (health-probe 10s→30s `6165648`, pause disk-wins `be0734d`, shell bash `ee948df`, bot-review 420s + diagnostics `209bffa`/`7c23853`) — they ride to the next tag.
+
+The tag `v0.1.0` is **not created** and must not be created until: signing credentials exist (Developer ID + notarization, Authenticode), Windows/Linux clean-machine E2E runs green, x64 macOS updater artifact ships, and a re-cut RC (rc5+) carries the post-rc4 fixes through the full gate again.
+
+## Phase 38 — rc4 publish decision
+
+`v0.1.0-rc4` release exists as a **draft** (owner decision pending). Publishing the draft is an owner-level action (public content). Note: `releases/latest/download/latest.json` only resolves once a non-prerelease is published; the updater feed for rc5+ does not depend on publishing rc4.
+
+## Phase 39 — What changed vs rc3 (release-engineering ledger, all root-cause fixes)
+
+- `0362220` health probe: `opencode --version` probe bound 10s (cold start measured 15.05s).
+- `6165648` health probe: bound 10s→30s after re-measurement.
+- `be0734d` pause race: stale in-memory task clobbered disk PAUSED/FAILED after the ChatGPT await; `pauseRequested` was dead code → `diskWins()` guards (after launch, after ask, first in catch).
+- `ee948df` shell: plan/agent commands ran under POSIX `sh` while the planner legitimately emits bashisms (`<(...)`) → false-negative verification of correct artifacts → `bash` (verifier.ts + computer/terminal.ts).
+- `209bffa` bot review: bound 180→300s; skip emit carries reason + analysis tail; T6 test fails fast on `review_skipped` WITH the reason (was a blind 480s timeout).
+- `7c23853` bot review: bound 300→420s (opencode boot+turns under thrash measured >300s).
+- Test infra (not product): TCC watcher AppleScript never compiled (`matches` is not a valid osascript operator) since v1 — silently clicked nothing; replaced with native `contains`, added click logging, poll every 5s.
+
+## Phase 40 — REQUIRED FINAL REPORT
+
+**M9 — Cross-Platform Distribution, Signing, Updater & Stable Release Gate**
+
+Result: All 40 phases executed. Updater E2E green; rc4 cut, dogfooded, stability-verified; full regression green at final HEAD (m7 13/13, m8 9/9, suite 39/39 incl. real-voice transcribe, typechecks ok, audit 0 vulns, secret-scan clean, CI green on every commit).
+
+Platform verdicts:
+- macOS: TECHNICALLY PASS (E2E verified on real hardware) — distribution blocked on Developer ID/notarization (ad-hoc only).
+- Windows: COMPILE-ONLY (CI green, artifacts exist) — no signing cert, no clean-machine E2E.
+- Linux: COMPILE-ONLY (CI green, artifacts exist) — no clean-machine E2E.
+
+**READY_FOR_V0.1.0_STABLE: NO** — stable is blocked on signing credentials (macOS Developer ID + notarization, Windows Authenticode), Windows/Linux clean-machine E2E, and x64 macOS updater artifact. `v0.1.0` tag intentionally NOT created.
+
+Environment (not product defects): 8GB machine chronic thrash caused 2 test flakes (both re-run green); `coreaudiod` system daemon wedged mid-session (voice tests blocked ~9h, recovered, then green); TCC consent prompts for ad-hoc rebuilds required a fixed watcher (`matches`→`contains` root cause).
+
+Pending owner decisions: publish rc4 draft (or re-cut rc5 carrying the 6 post-rc4 fixes); obtain signing credentials before any stable tag.
