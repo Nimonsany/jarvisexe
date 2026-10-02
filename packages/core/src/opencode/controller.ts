@@ -21,11 +21,16 @@ export class OpenCodeController {
    *  with task id + argv identity and can be group-killed on STOP/cancel. */
   registry: ProcessRegistry | null = null;
   // FR-5: env/configured → bundled → user-local → PATH (absolute path; no cwd binary)
-  constructor(private bin = discoverOpencode({ configured: process.env.OPENCODE_BIN })?.path ?? 'opencode') {}
+  // Re-discovered at EVERY call: opencode may be installed (or env changed)
+  // after the core booted — a construction-time bin freezes the fallback bare
+  // name forever (Windows E2E evidence: "task did not start within 20s").
+  private bin(): string {
+    return discoverOpencode({ configured: process.env.OPENCODE_BIN })?.path ?? 'opencode';
+  }
 
   async detect(): Promise<boolean> {
     return new Promise((resolve) => {
-      const p = spawn(this.bin, ['--version'], { stdio: 'ignore' });
+      const p = spawn(this.bin(), ['--version'], { stdio: 'ignore' });
       p.on('error', () => resolve(false));
       p.on('exit', (code) => resolve(code === 0));
     });
@@ -36,7 +41,7 @@ export class OpenCodeController {
     // --auto: non-interactive runs auto-reject external_directory permissions otherwise,
     // which breaks tasks in project dirs outside the opencode workspace.
     // detached: own process group → STOP sweeps whatever opencode spawned too.
-    const proc = spawn(this.bin, ['run', '--auto', prompt], {
+    const proc = spawn(this.bin(), ['run', '--auto', prompt], {
       cwd: projectDir,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
