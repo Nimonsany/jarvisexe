@@ -266,9 +266,10 @@ export class JarvisServer {
   private checkOpencode(): Promise<Health['opencode']> {
     return new Promise((resolve) => {
       const p = spawn(this.opencodeBin(), ['--version'], { stdio: 'ignore' });
-      // bounded probe — opencode --version can stall for minutes (1.9GB local
-      // db + active sessions) and health must never hang (same as checkVoice)
-      const timer = setTimeout(() => { p.kill('SIGKILL'); resolve('missing'); }, 10_000);
+      // bounded probe — opencode --version cold start is ~15s (1.8GB local db)
+      // and TCC-blocked or contended runs stall much longer; health must never
+      // hang (same as checkVoice). 30s covers observed cold starts.
+      const timer = setTimeout(() => { p.kill('SIGKILL'); resolve('missing'); }, 30_000);
       p.on('error', () => { clearTimeout(timer); resolve('missing'); });
       p.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 ? 'ready' : 'missing'); });
     });
