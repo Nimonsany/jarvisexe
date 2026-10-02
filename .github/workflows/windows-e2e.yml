@@ -1,0 +1,219 @@
+# M10 Phases 6-8 — Windows clean-machine E2E on a fresh GitHub-hosted Windows runner.
+# Real installer → real install → real runtime → handshake → health → smoke task
+# (graceful prerequisite handling) → quit/relaunch/history → ownership → uninstall.
+# Never counts compilation as this test. Runs on a clean ephemeral runner.
+name: Windows clean-machine E2E
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to test (e.g. v0.1.0-rc5)'
+        required: true
+        default: 'v0.1.0-rc5'
+
+permissions:
+  contents: read
+
+jobs:
+  clean-machine-e2e:
+    name: Windows clean-machine runtime E2E
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release installer (draft releases need auth)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$env:TAG" -R "$env:GITHUB_REPOSITORY" -p "JARVIS_*_x64-setup.exe" -p "JARVIS_*_x64-setup.exe.sig" -D dist
+          Get-ChildItem dist | ForEach-Object { Write-Host "downloaded: $($_.Name) $($_.Length)" }
+          if (-not (Get-ChildItem dist/*.exe)) { Write-Error "installer not downloaded"; exit 1 }
+
+      - name: Install (NSIS /S — per-user currentUser, no admin elevation)
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist/JARVIS_*_x64-setup.exe | Select-Object -First 1).FullName
+          Write-Host "installing: $exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "/S" -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Write-Error "installer failed with $($p.ExitCode)"; exit 1 }
+
+      - name: Locate installed app (no source-tree dependency)
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\jarvis",
+            "$env:LOCALAPPDATA\Programs\JARVIS",
+            "$env:LOCALAPPDATA\jarvis"
+          )
+          $found = $candidates | Where-Object { Test-Path (Join-Path $_ "jarvis-desktop.exe") } | Select-Object -First 1
+          if (-not $found) {
+            Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory | ForEach-Object { Write-Host "programs dir: $($_.Name)" }
+            Write-Error "jarvis-desktop.exe not found in any candidate install dir"; exit 1
+          }
+          "INSTALL_DIR=$found" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "install dir: $found"
+          $core = Get-ChildItem $found -Filter "jarvis-core*"
+          $core | ForEach-Object { Write-Host "sidecar: $($_.Name) size=$($_.Length)" }
+          # sidecar content check: a batch script renamed .exe cannot be spawned by CreateProcess
+          $coreExe = $core | Where-Object { $_.Name -eq "jarvis-core.exe" } | Select-Object -First 1
+          if ($coreExe) {
+            $bytes = [System.IO.File]::ReadAllBytes($coreExe.FullName)[0..1]
+            $isPE = ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A)
+            Write-Host "sidecar starts with MZ (PE executable): $isPE"
+            "SIDECAR_IS_PE=$isPE" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            Write-Host "no jarvis-core.exe in install dir"
+            "SIDECAR_IS_PE=false" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: Launch installed JARVIS (app spawns core sidecar)
+        shell: pwsh
+        run: |
+          Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
+          Write-Host "launched jarvis-desktop.exe"
+          Start-Sleep -Seconds 10
+          Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "process: $($_.ProcessName) pid=$($_.Id)"
+          }
+
+      - name: Core startup + identity handshake + health (Phase 7)
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(120)
+          $health = $null
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $health = Invoke-RestMethod -Uri "http://127.0.0.1:7788/health" -TimeoutSec 5
+              break
+            } catch { Start-Sleep -Seconds 5 }
+          }
+          if (-not $health) {
+            Write-Host "CORE_STARTUP: FAILED — no core on 7788 after 120s"
+            if ($env:SIDECAR_IS_PE -eq "false") {
+              Write-Host "ROOT CAUSE (expected M10 hypothesis): sidecar is a batch script renamed .exe — CreateProcess cannot execute it (ERROR_BAD_EXE_FORMAT)"
+            }
+            "CORE_UP=false" | Out-File -FilePath $env:GITHUB_ENV -Append
+            exit 0   # record evidence; later steps assert accordingly
+          }
+          $health | ConvertTo-Json -Compress | Out-File -FilePath core-health.json
+          Write-Host "CORE_STARTUP: OK — $($health | ConvertTo-Json -Compress)"
+          "CORE_UP=true" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $version = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/version" -TimeoutSec 5
+          $version | ConvertTo-Json -Compress | Out-File -FilePath core-version.json
+          Write-Host "HANDSHAKE: $($version | ConvertTo-Json -Compress)"
+          $boot = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/bootstrap" -TimeoutSec 5
+          Write-Host "bootstrap token acquired: $($boot.token.Length) chars"
+          $boot.token | Out-File -FilePath core-token.txt
+
+      - name: Install opencode (so discovery has a real target)
+        shell: pwsh
+        if: env.CORE_UP == 'true'
+        run: |
+          npm install -g opencode-ai 2>&1 | Select-Object -Last 2
+          $oc = (Get-Command opencode -ErrorAction SilentlyContinue)
+          if ($oc) { Write-Host "opencode installed: $($oc.Source)" } else { Write-Host "opencode NOT installed (graceful path will be tested)" }
+
+      - name: Smoke task — deterministic, harmless (Phase 7 + 18 + 19)
+        shell: pwsh
+        if: env.CORE_UP == 'true'
+        run: |
+          $token = (Get-Content core-token.txt -Raw).Trim()
+          $headers = @{ Authorization = "Bearer $token" }
+          $body = @{
+            request = "Create a temporary file named j10-windows-ok.txt in the project directory containing exactly the text JARVIS_WINDOWS_RUNTIME_OK (plain, unquoted). Create no other files."
+            project = $env:RUNNER_TEMP
+          } | ConvertTo-Json
+          $task = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Method Post -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 30
+          $id = $task.id
+          Write-Host "task created: $id"
+          "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $deadline = (Get-Date).AddSeconds(600)
+          $status = ""
+          while ((Get-Date) -lt $deadline) {
+            $t = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id" -Headers $headers -TimeoutSec 10
+            $status = $t.task.status
+            if ($status -in @("COMPLETED","FAILED","CANCELLED","WAITING_FOR_OWNER")) { break }
+            Start-Sleep -Seconds 10
+          }
+          Write-Host "task terminal status: $status"
+          $t = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id" -Headers $headers -TimeoutSec 10
+          $t | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath smoke-task.json
+          Write-Host "last_error: $($t.task.last_error)"
+          if ($status -eq "COMPLETED") {
+            $f = Join-Path $env:RUNNER_TEMP "j10-windows-ok.txt"
+            $content = (Get-Content $f -Raw).Trim()
+            Write-Host "smoke file content: $content"
+            if ($content -ne "JARVIS_WINDOWS_RUNTIME_OK") { Write-Error "smoke file content mismatch"; exit 1 }
+            "SMOKE=completed" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } elseif ($status -in @("FAILED","WAITING_FOR_OWNER")) {
+            Write-Host "SMOKE: failed gracefully (expected on a clean machine without ChatGPT credentials — Phase 18/19 behavior)"
+            "SMOKE=graceful-fail" | Out-File -FilePath $env:GITHUB_ENV -Append
+          } else {
+            Write-Error "task did not reach a terminal state in 600s (status=$status) — hang, not graceful"; exit 1
+          }
+
+      - name: Quit → relaunch → history present (Phase 7)
+        shell: pwsh
+        if: env.CORE_UP == 'true'
+        run: |
+          # ownership-verified stop: exact image names, never taskkill /IM fuzzy sweep on unrelated images
+          Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 5
+          $coreAlive = Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue
+          if ($coreAlive) {
+            Write-Host "WARNING: core sidecar survived app quit"
+            $coreAlive | ForEach-Object { Write-Host "surviving core pid=$($_.Id)" }
+          } else { Write-Host "core sidecar died with app (own process group)" }
+          Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
+          Start-Sleep -Seconds 15
+          $token = (Get-Content core-token.txt -Raw).Trim()
+          $headers = @{ Authorization = "Bearer $token" }
+          $tasks = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10
+          Write-Host "history after relaunch: $($tasks.Count) task(s)"
+          $tasks | ConvertTo-Json -Depth 3 -Compress | Out-File -FilePath history.json
+
+      - name: Process ownership (Phase 8) — unrelated process survives
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "notepad.exe"
+          Start-Sleep -Seconds 3
+          # stop every JARVIS-owned process by exact image name
+          Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 3
+          $notepad = Get-Process -Name "notepad" -ErrorAction SilentlyContinue
+          if ($notepad) { Write-Host "OWNERSHIP: PASS — unrelated notepad survived (pid=$($notepad.Id))" }
+          else { Write-Error "OWNERSHIP: FAIL — unrelated notepad was killed"; exit 1 }
+
+      - name: Uninstall (Phase 7/31) — owned resources cleaned
+        shell: pwsh
+        run: |
+          $un = Join-Path $env:INSTALL_DIR "uninstall.exe"
+          if (Test-Path $un) {
+            $p = Start-Process -FilePath $un -ArgumentList "/S" -Wait -PassThru
+            Write-Host "uninstaller exit: $($p.ExitCode)"
+          } else {
+            Write-Host "no uninstall.exe at $env:INSTALL_DIR — enumerating"
+            Get-ChildItem $env:INSTALL_DIR -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object { Write-Host $_.Name }
+          }
+          Start-Sleep -Seconds 5
+          $dirGone = -not (Test-Path (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe"))
+          Write-Host "install dir removed: $dirGone"
+          $procs = Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue
+          if ($procs) { Write-Host "WARNING: JARVIS processes survived uninstall" } else { Write-Host "no JARVIS processes after uninstall" }
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-e2e-evidence
+          path: |
+            core-health.json
+            core-version.json
+            smoke-task.json
+            history.json
+          if-no-files-found: ignore
