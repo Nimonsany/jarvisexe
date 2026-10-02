@@ -179,13 +179,25 @@ jobs:
           $id = $task.id
           Write-Host "task created: $id"
           "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
+          # observe: terminal state, or the Phase-19 login wait (the ask waits
+          # up to 5min for a manual ChatGPT login — nobody logs in on a clean
+          # runner, so after a bounded observation window we exercise the
+          # documented STOP path: cancel → CANCELLED)
           $deadline = (Get-Date).AddSeconds(600)
           $status = ""
           while ((Get-Date) -lt $deadline) {
             $t = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id" -Headers $headers -TimeoutSec 10
             $status = $t.task.status
-            if ($status -in @("COMPLETED","FAILED","CANCELLED","WAITING_FOR_OWNER")) { break }
+            if ($status -in @("COMPLETED","FAILED","CANCELLED","WAITING_FOR_OWNER","WAITING_FOR_CHATGPT")) { break }
             Start-Sleep -Seconds 10
+          }
+          if ($status -eq "WAITING_FOR_CHATGPT") {
+            Write-Host "PHASE 19: ChatGPT login required identified — task waits for a manual login (correct behavior on a clean machine)"
+            Write-Host "exercising the documented STOP path: cancel"
+            $c = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id/cancel" -Method Post -Headers $headers -TimeoutSec 15
+            Write-Host "cancel → status: $($c.status)"
+            "SMOKE=login-required-cancelled" | Out-File -FilePath $env:GITHUB_ENV -Append
+            "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
           Write-Host "task terminal status: $status"
           $t = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id" -Headers $headers -TimeoutSec 10
