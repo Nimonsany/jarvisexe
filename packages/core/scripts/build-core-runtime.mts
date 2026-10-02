@@ -56,7 +56,7 @@ if [ -z "$NODE_BIN" ]; then
   done
 fi
 if [ -z "$NODE_BIN" ]; then echo "node not found — install Node.js" >&2; exit 1; fi
-for CAND in "$DIR/core-runtime" "$DIR/../Resources/core-runtime" "$DIR/../core-runtime" "$DIR/../../../Resources/core-runtime" "$DIR"; do
+for CAND in "$DIR/core-runtime" "$DIR/../Resources/core-runtime" "$DIR/../core-runtime" "$DIR/../../../Resources/core-runtime" "$DIR" "/usr/lib/jarvis/core-runtime" "/usr/lib/JARVIS/core-runtime" "/usr/local/lib/jarvis/core-runtime"; do
   if [ -f "$CAND/server.js" ]; then
     export NODE_PATH="$CAND/node_modules:$NODE_PATH"
     exec "$NODE_BIN" "$CAND/server.js" "$@"
