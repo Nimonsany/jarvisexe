@@ -23,7 +23,9 @@ export class TerminalController {
     if (dryRun) {
       return { success: true, tool: 'terminal', action: 'run', durationMs: 0, metadata: { dryRun: true, command, cwd: cwd ?? process.cwd(), timeoutMs: args.timeoutMs ?? 120_000 } };
     }
-    const proc = spawn('sh', ['-c', command], {
+    // bash, not sh: plan/agent commands legitimately use bash syntax (<(...))
+    // that POSIX sh rejects
+    const proc = spawn('bash', ['-c', command], {
       cwd,
       env: { ...process.env, ...args.env },
       stdio: ['ignore', 'pipe', 'pipe'],

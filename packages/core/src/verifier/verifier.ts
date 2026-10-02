@@ -66,7 +66,10 @@ export class Verifier {
               p.on('error', (e) => resolve({ ok: false, detail: String(e) }));
               return;
             }
-            const p = spawn('sh', ['-c', cmd], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
+            // bash, not sh: planner output legitimately uses bash syntax
+            // (<(...) process substitution) that POSIX sh rejects — a correct
+            // artifact then "fails" verification (false negative)
+            const p = spawn('bash', ['-c', cmd], { cwd: dir, timeout: spec.timeout_ms ?? 120_000 });
             this.registry?.register(cmd, p, { role: 'verify', taskId: task.id });
             let out = '';
             p.stdout?.on('data', (c) => (out += c));
