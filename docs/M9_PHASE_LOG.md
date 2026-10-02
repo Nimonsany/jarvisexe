@@ -101,7 +101,21 @@
     tail, T6 test fails fast on review_skipped WITH the reason instead of
     a blind timeout.
     Probe experiment confirmed roster loads (283 bots, no prompt) once the
-    cdhash is granted. m7 run6 = final Phase 34 m7 leg.
+    cdhash is granted. run6 (209bffa): T6 failed fast WITH the reason —
+    bot ran all its verification commands (saw VERIFY: PASS, correct
+    18-byte file) but opencode's final summary turn never started before
+    the 300s SIGTERM: first turn alone took ~4min under thrash (load
+    241-332). Fixed at 7c23853: review bound 300→420s (T6 allows 480).
+    **m7 run7 (7c23853): ALL 13 GREEN, 53min** — Phase 34 m7 leg complete.
+    **m8 run3 (7c23853): ALL 9 GREEN, 15min** (fresh DMG from run7).
+    **Full suite at final HEAD 7c23853: 39/39 GREEN incl. real-voice
+    transcribe** (coreaudiod recovered; prior 3 "hangs" were not hangs —
+    the two server e2e files completed all steps but ran ~10min under
+    load 312-332 thrash + parallel opencode cold starts; standalone child
+    confirmed finishing normally at load ~40).
+    `npm audit --omit=dev`: 0 vulnerabilities. Secret scan: only the
+    pre-reviewed secret-name references in workflow files/README.
+    Phase 34 full regression COMPLETE at final HEAD.
   - voice REAL transcribe (say/whisper): green at 6165648 (tsx3, 08:14);
     later runs blocked by system `coreaudiod` wedge (afplay+say both hang
     in HAL init; root-level recovery only — env issue, voice code untouched
