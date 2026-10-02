@@ -87,6 +87,9 @@ jobs:
           Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
           Write-Host "launched jarvis-desktop.exe"
           Start-Sleep -Seconds 10
+          $spawned = Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue
+          if ($spawned) { Write-Host "SPAWN: core sidecar spawned by the app (pid=$($spawned.Id))" }
+          else { Write-Host "SPAWN: core sidecar NOT spawned by the app (check: app logs 'sidecar not found')" }
           Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue | ForEach-Object {
             Write-Host "process: $($_.ProcessName) pid=$($_.Id)"
           }

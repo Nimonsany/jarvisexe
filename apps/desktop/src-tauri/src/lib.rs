@@ -64,7 +64,14 @@ pub fn run() {
                 // spawn the JARVIS core sidecar (launcher script next to the exe;
                 // the launcher locates node + the core runtime itself)
                 if let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
-                    let sidecar = exe_dir.join("jarvis-core");
+                    // M10: on Windows the installed sidecar is `jarvis-core.exe` —
+                    // a literal `jarvis-core` (no extension) never exists() and the
+                    // spawn was silently skipped (Windows clean-machine E2E evidence).
+                    let sidecar = ["jarvis-core.exe", "jarvis-core"]
+                        .iter()
+                        .map(|n| exe_dir.join(n))
+                        .find(|p| p.exists())
+                        .unwrap_or_else(|| exe_dir.join("jarvis-core"));
                     if sidecar.exists() {
                         // process_group(0): sidecar leads its OWN group → on app
                         // exit one group kill sweeps core + every task process
