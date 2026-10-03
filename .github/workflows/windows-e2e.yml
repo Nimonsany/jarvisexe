@@ -179,6 +179,7 @@ jobs:
           $id = $task.id
           Write-Host "task created: $id"
           "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $smokeOutcome = ""
           # observe: terminal state, or the Phase-19 login wait (the ask waits
           # up to 5min for a manual ChatGPT login — nobody logs in on a clean
           # runner, so after a bounded observation window we exercise the
@@ -196,6 +197,7 @@ jobs:
             Write-Host "exercising the documented STOP path: cancel"
             $c = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task/$id/cancel" -Method Post -Headers $headers -TimeoutSec 15
             Write-Host "cancel → status: $($c.status)"
+            $smokeOutcome = "login-required-cancelled"
             "SMOKE=login-required-cancelled" | Out-File -FilePath $env:GITHUB_ENV -Append
             "SMOKE_TASK_ID=$id" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
@@ -212,7 +214,7 @@ jobs:
           } elseif ($status -in @("FAILED","WAITING_FOR_OWNER")) {
             Write-Host "SMOKE: failed gracefully (expected on a clean machine without ChatGPT credentials — Phase 18/19 behavior)"
             "SMOKE=graceful-fail" | Out-File -FilePath $env:GITHUB_ENV -Append
-          } elseif ($env:SMOKE -eq "login-required-cancelled") {
+          } elseif ($smokeOutcome -eq "login-required-cancelled") {
             Write-Host "SMOKE: Phase-19 login wait observed + documented cancel exercised cleanly"
           } else {
             Write-Error "task did not reach a terminal state in 600s (status=$status) — hang, not graceful"; exit 1
