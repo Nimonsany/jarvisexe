@@ -86,7 +86,7 @@ if [ -n "$CORE" ]; then
   " > "$OUT/deb-core-health.log" 2>&1
   sleep 2
   http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/deb-health.json"
-  if grep -q '"core":"online"' "$OUT/deb-core-health.log"; then
+  if grep -q '"core":"online"' "$OUT/deb-health.json" 2>/dev/null; then
     ok "DEB core startup + health"
     TOKEN=$(http_get "http://127.0.0.1:$PORT/api/bootstrap" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
     VER=$(http_get "http://127.0.0.1:$PORT/api/version" | head -c 120)
@@ -178,7 +178,7 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
   " > "$OUT/appimage-core-health.log" 2>&1
   sleep 2
   http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/appimage-health.json"
-  if grep -q '"core":"online"' "$OUT/appimage-core-health.log"; then
+  if grep -q '"core":"online"' "$OUT/appimage-health.json" 2>/dev/null; then
     ok "AppImage core startup + health (packaged runtime, no source tree)"
   else
     fail "AppImage core startup"
