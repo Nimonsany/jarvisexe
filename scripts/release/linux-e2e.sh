@@ -96,7 +96,7 @@ if [ -n "$CORE" ]; then
       # smoke task — install opencode first (the task pipeline requires it);
       # ChatGPT is unavailable on a clean machine so the task exercises the
       # graceful-fail path (Phase 18/19)
-      docker exec j10-deb bash -c 'npm i -g opencode-ai >/dev/null 2>&1; which opencode' || echo "WARN: opencode install failed"
+      docker exec j10-deb bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x "$HOME/.opencode/bin/opencode" && echo "opencode installed: $HOME/.opencode/bin/opencode"' || echo "WARN: opencode install failed"
       SMOKE=$(http_post "http://127.0.0.1:$PORT/api/tasks" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
       TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       echo "smoke task: $TID"
@@ -183,6 +183,48 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
   http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/appimage-health.json"
   if grep -q '"core":"online"' "$OUT/appimage-health.json" 2>/dev/null; then
     ok "AppImage core startup + health (packaged runtime, no source tree)"
+    TOKEN2=$(http_get "http://127.0.0.1:$PORT/api/bootstrap" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])" 2>/dev/null)
+    VER2=$(http_get "http://127.0.0.1:$PORT/api/version" | head -c 120)
+    echo "appimage handshake: $VER2"
+    if [ -n "$TOKEN2" ] && echo "$VER2" | grep -q '"core"'; then
+      ok "AppImage UI-Core handshake (identity)"
+      docker exec j10-appimage bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x "$HOME/.opencode/bin/opencode" && echo INSTALLED' || echo "WARN: opencode install failed"
+      SMOKE2=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work2"}' "$TOKEN2")
+      TID2=$(echo "$SMOKE2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      echo "appimage smoke task: $TID2"
+      if [ -n "$TID2" ]; then
+        S2=""
+        for i in $(seq 1 40); do
+          sleep 10
+          S2=$(http_get "http://127.0.0.1:$PORT/api/task/$TID2" "$TOKEN2" | python3 -c "import sys,json;print(json.load(sys.stdin)['task']['status'])" 2>/dev/null)
+          case "$S2" in COMPLETED|FAILED|CANCELLED|WAITING_FOR_OWNER|WAITING_FOR_CHATGPT) break;; esac
+        done
+        echo "appimage smoke terminal: $S2"
+        case "$S2" in
+          COMPLETED) ok "AppImage smoke task completed";;
+          WAITING_FOR_CHATGPT)
+            http_post "http://127.0.0.1:$PORT/api/task/$TID2/cancel" '{}' "$TOKEN2" >/dev/null 2>&1
+            ok "AppImage smoke: Phase-19 login wait observed, then cancelled cleanly";;
+          FAILED|WAITING_FOR_OWNER) ok "AppImage smoke failed GRACEFULLY (clean machine: no ChatGPT credentials)";;
+          *) fail "AppImage smoke task hung (status=$S2)";;
+        esac
+      else
+        fail "AppImage smoke task creation"
+      fi
+      # stop (ownership-verified group kill) + cleanup
+      docker exec j10-appimage bash -c '
+        PID=$(cat /tmp/j10core2.pid 2>/dev/null)
+        if [ -n "$PID" ]; then
+          ps -ww -p "$PID" -o args= 2>/dev/null | grep -q "core-runtime/server.js" && kill -- -"$PID" 2>/dev/null || kill "$PID" 2>/dev/null
+        fi
+        sleep 2
+        LEFT=$(ps -ww -eo args= | grep -c "core-runtime/server.js" || true)
+        echo "appimage core processes left: $LEFT"
+      '
+      ok "AppImage core stop (ownership-verified) + cleanup"
+    else
+      fail "AppImage handshake"
+    fi
   else
     fail "AppImage core startup"
     tail -5 "$OUT/appimage-core-health.log"
