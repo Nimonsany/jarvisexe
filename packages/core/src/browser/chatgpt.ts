@@ -11,6 +11,13 @@ import type { ProcessRegistry } from '../computer/registry.js';
 type PlaywrightModule = typeof import('playwright');
 let playwrightModule: PlaywrightModule | null = null;
 async function loadChromium(): Promise<PlaywrightModule['chromium']> {
+  // playwright's node-version check calls process.exit(1) on Node < 20 — it
+  // would kill the WHOLE core even via a lazy import (Linux E2E evidence:
+  // distro node 18.19.1). Never import it; degrade with an actionable error.
+  const major = Number(process.versions.node.split('.')[0]);
+  if (major < 20) {
+    throw new Error(`ChatGPT automation requires Node.js >= 20; system node is ${process.versions.node} — install a newer Node.js or leave ChatGPT planning unavailable`);
+  }
   if (!playwrightModule) playwrightModule = await import('playwright');
   return playwrightModule.chromium;
 }
