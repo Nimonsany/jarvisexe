@@ -90,7 +90,7 @@ if [ -n "$CORE" ]; then
     ok "DEB core startup + health"
     # token from the runtime's auth-token file — the /api/bootstrap endpoint is
     # browser-origin-gated and returns empty for curl in this harness
-    TOKEN=$(cat /tmp/j10state/auth-token 2>/dev/null)
+    TOKEN=$(docker exec j10-deb cat /tmp/j10state/auth-token 2>/dev/null)
     VER=$(http_get "http://127.0.0.1:$PORT/api/version" | head -c 120)
     echo "handshake: $VER"
     if [ -n "$TOKEN" ] && echo "$VER" | grep -q "jarvis-core\|core"; then
@@ -185,7 +185,7 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
   http_get "http://127.0.0.1:$PORT/health" | tee "$OUT/appimage-health.json"
   if grep -q '"core":"online"' "$OUT/appimage-health.json" 2>/dev/null; then
     ok "AppImage core startup + health (packaged runtime, no source tree)"
-    TOKEN2=$(cat /tmp/j10state2/auth-token 2>/dev/null)
+    TOKEN2=$(docker exec j10-appimage cat /tmp/j10state2/auth-token 2>/dev/null)
     VER2=$(http_get "http://127.0.0.1:$PORT/api/version" | head -c 120)
     echo "appimage handshake: $VER2"
     if [ -n "$TOKEN2" ] && echo "$VER2" | grep -q '"core"'; then
