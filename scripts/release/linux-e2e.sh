@@ -96,7 +96,7 @@ if [ -n "$CORE" ]; then
       # smoke task — install opencode first (the task pipeline requires it);
       # ChatGPT is unavailable on a clean machine so the task exercises the
       # graceful-fail path (Phase 18/19)
-      docker exec j10-deb bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x "$HOME/.opencode/bin/opencode" && echo "opencode installed: $HOME/.opencode/bin/opencode"' || echo "WARN: opencode install failed"
+      docker exec j10-deb bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x ~/.opencode/bin/opencode && echo "opencode installed: user-local" ' || echo "WARN: opencode install failed"
       SMOKE=$(http_post "http://127.0.0.1:$PORT/api/tasks" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
       TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       echo "smoke task: $TID"
@@ -188,7 +188,7 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
     echo "appimage handshake: $VER2"
     if [ -n "$TOKEN2" ] && echo "$VER2" | grep -q '"core"'; then
       ok "AppImage UI-Core handshake (identity)"
-      docker exec j10-appimage bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x "$HOME/.opencode/bin/opencode" && echo INSTALLED' || echo "WARN: opencode install failed"
+      docker exec j10-appimage bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x ~/.opencode/bin/opencode && echo INSTALLED' || echo "WARN: opencode install failed"
       SMOKE2=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work2"}' "$TOKEN2")
       TID2=$(echo "$SMOKE2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       echo "appimage smoke task: $TID2"
