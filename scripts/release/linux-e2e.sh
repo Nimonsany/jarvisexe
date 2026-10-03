@@ -36,7 +36,7 @@ import urllib.request,sys
 req=urllib.request.Request(sys.argv[1],data=sys.argv[2].encode(),method='POST')
 req.add_header('Authorization','Bearer '+sys.argv[3])
 req.add_header('Content-Type','application/json')
-print(urllib.request.urlopen(req,timeout=10).read().decode())
+print(urllib.request.urlopen(req,timeout=35).read().decode())
 " "$1" "$2" "$3" 2>/dev/null
 }
 probe() { docker exec "$CN" python3 -c "
@@ -93,7 +93,10 @@ if [ -n "$CORE" ]; then
     echo "handshake: $VER"
     if [ -n "$TOKEN" ] && echo "$VER" | grep -q "jarvis-core\|core"; then
       ok "DEB UI-Core handshake (identity via /api/version)"
-      # smoke task — graceful on a clean machine (no opencode/chatgpt credentials)
+      # smoke task — install opencode first (the task pipeline requires it);
+      # ChatGPT is unavailable on a clean machine so the task exercises the
+      # graceful-fail path (Phase 18/19)
+      docker exec j10-deb bash -c 'npm i -g opencode-ai >/dev/null 2>&1; which opencode' || echo "WARN: opencode install failed"
       SMOKE=$(http_post "http://127.0.0.1:$PORT/api/tasks" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
       TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       echo "smoke task: $TID"
