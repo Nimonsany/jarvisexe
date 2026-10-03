@@ -45,7 +45,7 @@ export interface TaskEvent {
 // (Every active state may go PAUSED: boot recovery marks interrupted tasks PAUSED
 //  — FR-12 — and the user resumes from there.)
 const TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  NEW: ['PLANNING', 'PAUSED', 'CANCELLED'],
+  NEW: ['PLANNING', 'PAUSED', 'FAILED', 'CANCELLED'],
   PLANNING: ['WAITING_FOR_CHATGPT', 'PAUSED', 'FAILED', 'CANCELLED'],
   WAITING_FOR_CHATGPT: ['PLAN_RECEIVED', 'WAITING_FOR_OWNER', 'PAUSED', 'FAILED', 'CANCELLED'],
   PLAN_RECEIVED: ['PREPARING_EXECUTION', 'PAUSED', 'FAILED', 'CANCELLED'],
