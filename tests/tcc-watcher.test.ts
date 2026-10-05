@@ -10,25 +10,32 @@
  * - failures are observable: stderr is captured to the log, not discarded
  * - watcher startup/clicks generate evidence in the log
  * - only Allow/OK-family buttons are clicked (never "Don't Allow")
+ * - LIVE: the real detection query runs against System Events (exits 0)
+ * - LIVE: the watcher shell loop actually starts and survives one iteration
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const scriptPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'tcc-watcher.sh');
+const here = path.dirname(fileURLToPath(import.meta.url));
+const scriptPath = path.resolve(here, '..', 'scripts', 'tcc-watcher.sh');
+const applescriptPath = path.resolve(here, '..', 'scripts', 'tcc-watcher.applescript');
 
 function fileURLToPath(url: string): string {
   return url.replace(/^file:\/\//, '');
 }
 
-/** Extract the AppleScript heredoc body (between `<<EOF` and the closing `EOF`) */
+/** Body of the AppleScript that the watcher executes: heredoc if present
+ *  (pre-Phase-21 layout), otherwise the referenced scripts/*.applescript file. */
 function extractApplescript(script: string): string {
   const m = script.match(/<<EOF[^\n]*\n([\s\S]*?)\nEOF\n/);
-  assert.ok(m, 'AppleScript heredoc not found in watcher script');
-  return m![1];
+  if (m) return m[1];
+  const ref = script.match(/\$\(dirname "\$0"\)\/([A-Za-z0-9._-]+\.applescript)/);
+  assert.ok(ref, 'AppleScript source not found in watcher script (no heredoc, no .applescript reference)');
+  return readFileSync(path.resolve(path.dirname(scriptPath), ref![1]), 'utf8');
 }
 
 test('watcher script exists and passes bash syntax check', () => {
@@ -60,15 +67,62 @@ test('stderr is captured to the log — never blindly discarded (M10 Phase 21/22
 });
 
 test('click logging present — intended interaction generates evidence', () => {
-  const script = readFileSync(scriptPath, 'utf8');
-  assert.ok(script.includes('log "clicked " & bn'), 'clicks must be logged with the button name');
+  const as = readFileSync(applescriptPath, 'utf8');
+  assert.ok(as.includes('log "clicked " & bn'), 'clicks must be logged with the button name');
 });
 
 test('only Allow/OK-family buttons are clicked — never "Don\'t Allow"', () => {
-  const script = readFileSync(scriptPath, 'utf8');
-  const clickAllow = script.match(/if bn is in \{([^}]*)\} then/);
+  const as = readFileSync(applescriptPath, 'utf8');
+  const clickAllow = as.match(/if bn is in \{([^}]*)\} then/);
   assert.ok(clickAllow, 'click allowlist not found');
   const allowlist = clickAllow![1];
   assert.ok(allowlist.includes('"OK"'), 'allowlist must include OK');
   assert.ok(!/"Don't Allow"/.test(allowlist), 'allowlist must never include "Don\'t Allow"');
+});
+
+test('osacompile validates scripts/tcc-watcher.applescript — the real source file', { skip: process.platform !== 'darwin' }, () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tcc-watcher-src-'));
+  try {
+    execFileSync('osacompile', ['-o', path.join(dir, 'out.scpt'), applescriptPath], { encoding: 'utf8' });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('LIVE detection: target query runs against System Events and exits 0', { skip: process.platform !== 'darwin' }, () => {
+  // Executes has_dont/has_ok/title-match logic on real SecurityAgent /
+  // UserNotificationCenter windows. No dialogs are created, so with none
+  // present this must exit 0 with empty output. An AppleEvents TCC denial
+  // (error -1743) makes execFileSync throw and fails — never masked here.
+  const out = execFileSync('osascript', [applescriptPath], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(out.trim(), '', 'detection with no matching dialogs must produce no clicks');
+});
+
+test('WATCHER START: bash scripts/tcc-watcher.sh runs and survives one iteration', { skip: process.platform !== 'darwin', timeout: 30_000 }, async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'tcc-watcher-start-'));
+  const logPath = path.join(dir, 'watcher.log');
+  const child = spawn('bash', [scriptPath], {
+    env: { ...process.env, TCC_WATCHER_LOG: logPath },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => { stderr += d; });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    await new Promise((r) => setTimeout(r, 7000)); // > one 5s loop iteration
+    assert.equal(child.exitCode, null, `watcher died within 7s (exit=${child.exitCode}) stderr=${stderr}`);
+    assert.ok(!child.killed, 'watcher was killed before the liveness check');
+  } finally {
+    try { process.kill(-child.pid!, 'SIGTERM'); } catch { child.kill('SIGTERM'); }
+    await new Promise((r) => setTimeout(r, 500));
+    if (child.exitCode === null) {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    }
+    child.unref();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
