@@ -46,6 +46,15 @@ jobs:
       - name: Install (NSIS /S — per-user currentUser, no admin elevation)
         shell: pwsh
         run: |
+          # Phase 31 seed: user data OUTSIDE the package, written BEFORE install.
+          # (opencode is installed later to %USERPROFILE%\.opencode\bin — also
+          #  user-local, never owned by the package; both must survive uninstall)
+          $seedDir = Join-Path $env:USERPROFILE "jarvis-user-project"
+          New-Item -ItemType Directory -Force -Path $seedDir | Out-Null
+          $seed = Join-Path $seedDir "keep.txt"
+          Set-Content -Path $seed -Value "jarvis user data - must survive uninstall"
+          if (-not (Test-Path $seed)) { Write-Host "::error::UNINSTALL_SAFETY: seed file could not be written at $seed"; exit 1 }
+          Write-Host "UNINSTALL_SAFETY seed (before install): $seed"
           $exe = (Get-ChildItem dist/JARVIS_*_x64-setup.exe | Select-Object -First 1).FullName
           Write-Host "installing: $exe"
           $p = Start-Process -FilePath $exe -ArgumentList "/S" -Wait -PassThru
@@ -224,6 +233,16 @@ jobs:
         shell: pwsh
         if: env.CORE_UP == 'true'
         run: |
+          # any terminating error in this step must surface as a real failure
+          trap { Write-Host "::error::CRASH_RECOVERY: FAIL — $($_.Exception.Message)"; exit 1 }
+          function Wait-CoreHealth {
+            param([int]$Seconds = 120)
+            $end = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $end) {
+              try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:7788/health" -TimeoutSec 5; return $true } catch { Start-Sleep -Seconds 5 }
+            }
+            return $false
+          }
           # GRACEFUL quit first: CloseMainWindow() = WM_CLOSE → Tauri fires
           # ExitRequested → the exit handler kills the core sidecar (group kill on
           # unix; launcher kill → Job Object close on Windows). Stop-Process -Force
@@ -235,19 +254,122 @@ jobs:
             Write-Host "WARNING: core sidecar survived graceful quit"
             $coreAlive | ForEach-Object { Write-Host "surviving core pid=$($_.Id)" }
           } else { Write-Host "core sidecar died with graceful quit" }
-          # CRASH path (Phase 29): force-kill everything, relaunch, verify recovery
-          Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue | Stop-Process -Force
-          Start-Sleep -Seconds 3
+
+          # CRASH path (Phase 29): the old block force-killed AFTER the graceful
+          # quit had already stopped everything — a no-op kill proves nothing.
+          # Relaunch first so the kill targets a LIVE runtime with an IN-FLIGHT task.
           Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
-          Start-Sleep -Seconds 15
+          if (-not (Wait-CoreHealth -Seconds 120)) {
+            Write-Host "::error::CRASH_RECOVERY: FAIL (state=pre-kill-health-timeout) — core never came up before the crash test"
+            exit 1
+          }
           $token = (Get-Content core-token.txt -Raw).Trim()
           $headers = @{ Authorization = "Bearer $token" }
-          $tasks = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10
+          $crashBody = @{
+            request = "Crash-recovery probe: create a temporary file named j10-crash.txt in the project directory containing exactly the text JARVIS_CRASH_RECOVERY (plain, unquoted). Create no other files."
+            project = $env:RUNNER_TEMP
+          } | ConvertTo-Json
+          try {
+            $ct = Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/task" -Method Post -Headers $headers -ContentType "application/json" -Body $crashBody -TimeoutSec 35
+          } catch {
+            Write-Host "::error::CRASH_RECOVERY: FAIL (state=task-create-failed) — $($_.Exception.Message)"
+            exit 1
+          }
+          $crashId = $ct.id
+          Write-Host "crash task created: $crashId pre-kill status=$($ct.status)"
+          Start-Sleep -Seconds 5
+          # both processes must be provably alive RIGHT BEFORE the kill
+          $dProc = Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue
+          $cProc = Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue
+          if (-not $dProc -or -not $cProc) {
+            Write-Host "::error::CRASH_RECOVERY: FAIL (state=$($ct.status)) — pre-kill liveness: desktop=$([bool]$dProc) core=$([bool]$cProc)"
+            exit 1
+          }
+          Write-Host "pre-kill: jarvis-desktop pid=$($dProc.Id) jarvis-core pid=$($cProc.Id)"
+          # killing the desktop may take the core down with it (Job Object) —
+          # attempt both, report any refusal, then assert the real outcome below
+          @($dProc) + @($cProc) | ForEach-Object {
+            try { Stop-Process -Id $_.Id -Force -ErrorAction Stop }
+            catch { Write-Host "kill note: $($_.Exception.Message)" }
+          }
+          Start-Sleep -Seconds 3
+          $survivors = @(Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue)
+          if ($survivors.Count -gt 0) {
+            $survivors | ForEach-Object { Write-Host "::error::CRASH_RECOVERY: FAIL — $($_.ProcessName) pid=$($_.Id) survived force-kill" }
+            exit 1
+          }
+          Write-Host "post-kill: jarvis-desktop and jarvis-core both gone"
+          # relaunch + wait for recovery
+          Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
+          if (-not (Wait-CoreHealth -Seconds 120)) {
+            Write-Host "::error::CRASH_RECOVERY: FAIL (state=$($ct.status)) — core not healthy 120s after crash relaunch"
+            exit 1
+          }
+          $tasks = @(Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10)
           Write-Host "history after relaunch: $($tasks.Count) task(s)"
           $tasks | ConvertTo-Json -Depth 3 -Compress | Out-File -FilePath history.json
-          # orphan check (Phase 29): no unexpected orphan controlled process
+          # documented recovery outcome: print the ACTUAL status, never assume one
+          $hit = @($tasks | Where-Object { $_.id -eq $crashId }) | Select-Object -First 1
+          $state = if ($hit) { [string]$hit.status } else { "<missing>" }
+          $docStates = @('NEW','PLANNING','WAITING_FOR_CHATGPT','PLAN_RECEIVED','PREPARING_EXECUTION','EXECUTING','MONITORING','TESTING','VERIFYING','DEBUGGING','WAITING_FOR_OWNER','PAUSED','FAILED','COMPLETED','CANCELLED')
+          $cores = @(Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue)
+          $desktops = @(Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue)
           $procs = Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue
           $procs | ForEach-Object { Write-Host "live after relaunch: $($_.ProcessName) pid=$($_.Id)" }
+          $histOk = ($null -ne $hit) -and ($state -in $docStates)
+          $coreOk = ($cores.Count -eq 1)          # exactly one core — no orphaned extra core
+          $deskOk = ($desktops.Count -ge 1)
+          if ($histOk -and $coreOk -and $deskOk) {
+            Write-Host "CRASH_RECOVERY: PASS (state=$state)"
+          } else {
+            Write-Host "::error::CRASH_RECOVERY: FAIL (state=$state) in_history=$($null -ne $hit) documented=$($state -in $docStates) jarvis_core_count=$($cores.Count) jarvis_desktop_count=$($desktops.Count)"
+            exit 1
+          }
+
+      - name: Reinstall over existing install (Phase 30)
+        shell: pwsh
+        if: env.CORE_UP == 'true'
+        run: |
+          trap { Write-Host "::error::REINSTALL: FAIL — $($_.Exception.Message)"; exit 1 }
+          function Wait-CoreHealth {
+            param([int]$Seconds = 120)
+            $end = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $end) {
+              try { $null = Invoke-RestMethod -Uri "http://127.0.0.1:7788/health" -TimeoutSec 5; return $true } catch { Start-Sleep -Seconds 5 }
+            }
+            return $false
+          }
+          $token = (Get-Content core-token.txt -Raw).Trim()
+          $headers = @{ Authorization = "Bearer $token" }
+          # snapshot history BEFORE the reinstall — it must survive it
+          $preIds = @(Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10 | ForEach-Object { $_.id })
+          Write-Host "REINSTALL: task ids before reinstall: $($preIds -join ' ')"
+          if ($preIds.Count -eq 0) { Write-Host "::error::REINSTALL: FAIL — no task history to prove preservation against"; exit 1 }
+          # quit first so NSIS never copies over locked files, then force-kill leftovers
+          $running = @(Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue)
+          if ($running.Count -gt 0) {
+            $running | ForEach-Object { $_.CloseMainWindow() | Out-Null }
+            Start-Sleep -Seconds 8
+          }
+          Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          $exe = (Get-ChildItem dist/JARVIS_*_x64-setup.exe | Select-Object -First 1).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "/S" -Wait -PassThru
+          Write-Host "REINSTALL: second silent install exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Write-Host "::error::REINSTALL: FAIL — installer exit $($p.ExitCode)"; exit 1 }
+          Start-Process -FilePath (Join-Path $env:INSTALL_DIR "jarvis-desktop.exe")
+          if (-not (Wait-CoreHealth -Seconds 120)) {
+            Write-Host "::error::REINSTALL: FAIL — core not healthy after reinstall relaunch"
+            exit 1
+          }
+          $postIds = @(Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10 | ForEach-Object { $_.id })
+          $missing = @($preIds | Where-Object { $_ -notin $postIds })
+          Write-Host "REINSTALL: task ids after reinstall: $($postIds -join ' ') (missing: $(if ($missing) { $missing -join ' ' } else { 'none' }))"
+          $cores = @(Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue)
+          Write-Host "REINSTALL: jarvis-core processes after relaunch: $($cores.Count)"
+          if ($missing.Count -gt 0) { Write-Host "::error::REINSTALL: FAIL — task history lost after reinstall (missing: $($missing -join ' '))"; exit 1 }
+          if ($cores.Count -ne 1) { Write-Host "::error::REINSTALL: FAIL — jarvis-core count is $($cores.Count) after reinstall relaunch"; exit 1 }
+          Write-Host "REINSTALL: PASS (exit 0, health OK, $($postIds.Count) task(s) preserved)"
 
       - name: Process ownership (Phase 8) — unrelated process survives
         shell: pwsh
@@ -264,6 +386,13 @@ jobs:
       - name: Uninstall (Phase 7/31) — owned resources cleaned
         shell: pwsh
         run: |
+          # what must SURVIVE the uninstall (asserted again after it runs)
+          $seed = Join-Path $env:USERPROFILE "jarvis-user-project\keep.txt"
+          $seedPre = Test-Path $seed
+          $oc = Join-Path $env:USERPROFILE ".opencode\bin\opencode.exe"
+          $ocPre = Test-Path $oc
+          Write-Host "before uninstall: seed=$seedPre ($seed) opencode=$ocPre ($oc)"
+          if (-not $ocPre) { Write-Host "note: opencode.exe absent before uninstall — survival claim not claimable (see opencode install step)" }
           $un = Join-Path $env:INSTALL_DIR "uninstall.exe"
           if (Test-Path $un) {
             $p = Start-Process -FilePath $un -ArgumentList "/S" -Wait -PassThru
@@ -277,6 +406,17 @@ jobs:
           Write-Host "install dir removed: $dirGone"
           $procs = Get-Process -Name "jarvis-desktop","jarvis-core" -ErrorAction SilentlyContinue
           if ($procs) { Write-Host "WARNING: JARVIS processes survived uninstall" } else { Write-Host "no JARVIS processes after uninstall" }
+          # Phase 31: package files go, user data and user-local tooling stay
+          $seedPost = Test-Path $seed
+          $ocPost = Test-Path $oc
+          Write-Host "after uninstall: seed=$seedPost opencode=$ocPost"
+          $safe = $dirGone -and $seedPost -and ((-not $ocPre) -or $ocPost)
+          if ($safe) {
+            Write-Host "UNINSTALL_SAFETY: PASS"
+          } else {
+            Write-Host "::error::UNINSTALL_SAFETY: FAIL (install_dir_removed=$dirGone seed_survived=$seedPost opencode_survived=$ocPost opencode_pre=$ocPre)"
+            exit 1
+          }
 
       - name: Upload evidence
         uses: actions/upload-artifact@v4
