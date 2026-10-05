@@ -299,12 +299,15 @@ export class JarvisServer {
     const dir = project || this.settings.defaultProjectDir || path.join(this.runtimeDir, '..', 'projects', `task-project-${Date.now()}`);
     mkdirSync(dir, { recursive: true });
     const startedAt = Date.now();
-    // run in background; UI follows via SSE
+    // run in background; UI follows via SSE — keep the pre-create failure message
+    // so the API caller sees 'OpenCode CLI not found on PATH' instead of a bare 20s timeout
+    let runError: string | null = null;
     this.orchestrator.run(request, dir)
-      .catch(() => {})
+      .catch((e) => { runError = e instanceof Error ? e.message : String(e); })
       .finally(() => { this.busy = false; });
     // wait for the task id (opencode detect can take several seconds)
     for (let i = 0; i < 120; i++) {
+      if (runError) break;
       const tasks = await this.store.listAll();
       const match = tasks.find((t) => t.owner_request === request && new Date(t.created_at).getTime() >= startedAt - 1000);
       if (match) return match;
@@ -316,6 +319,7 @@ export class JarvisServer {
     if (orphan && !['COMPLETED', 'CANCELLED', 'FAILED'].includes(orphan.status)) {
       await this.orchestrator.cancel(orphan.id).catch(() => {});
     }
+    if (runError) throw new Error(`task failed to start: ${runError}`);
     throw new Error('task did not start within 20s');
   }
 

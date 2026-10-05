@@ -33,7 +33,7 @@ jobs:
       - name: Dependency audit (production)
         run: npm audit --omit=dev
       - name: SBOM (Phase 24)
-        run: npm sbom --sbom-format spdx --omit=dev > sbom.spdx.json
+        run: npm sbom --sbom-format spdx --omit=dev > sbom.spdx.json && python3 scripts/release/sbom-enrich.py sbom.spdx.json
       - uses: actions/upload-artifact@v4
         with:
           name: sbom
@@ -131,7 +131,8 @@ jobs:
           # signing evidence (ad-hoc/unsigned vs Developer ID)
           APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
           codesign -dv "$APP" > dist/macos-codesign.txt 2>&1 || true
-          echo "VER=$VER ARCH=$ARCH" >> "$GITHUB_ENV"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          echo "ARCH=$ARCH" >> "$GITHUB_ENV"
       # Phase 14 — verify Developer ID signature + hardened runtime. Gated on signing
       # having run; when secrets are absent the step is a no-op so the unsigned build
       # path is unchanged.
@@ -438,7 +439,9 @@ jobs:
         run: |
           NOTES=docs/RELEASE_NOTES.md
           if [ -f "$NOTES" ]; then
-            sed "s/<version>/${GITHUB_REF_NAME}/g" "$NOTES" > /tmp/release-notes.md
+            # asset names carry the version WITHOUT the tag's leading v (JARVIS_0.1.0-rc14_arm64.dmg)
+            VER="${GITHUB_REF_NAME#v}"
+            sed "s/<version>/${VER}/g" "$NOTES" > /tmp/release-notes.md
             NOTES=/tmp/release-notes.md
           else
             NOTES=""
