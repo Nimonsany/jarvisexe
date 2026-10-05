@@ -305,12 +305,19 @@ jobs:
             Write-Host "::error::CRASH_RECOVERY: FAIL (state=$($ct.status)) — core not healthy 120s after crash relaunch"
             exit 1
           }
-          $tasks = @(Invoke-RestMethod -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10)
-          Write-Host "history after relaunch: $($tasks.Count) task(s)"
-          $tasks | ConvertTo-Json -Depth 3 -Compress | Out-File -FilePath history.json
+          # pwsh gotcha: Invoke-RestMethod wraps JSON arrays as ONE object, so
+          # @(...).Count and [string]$hit.status silently lie (array joins to
+          # "A B"). Parse the raw body explicitly, preserve it as evidence,
+          # normalize with @(), and require a scalar status.
+          $resp = Invoke-WebRequest -Uri "http://127.0.0.1:7788/api/tasks" -Headers $headers -TimeoutSec 10
+          $rawBody = [string]$resp.Content
+          Write-Host "tasks raw (first 300): $($rawBody.Substring(0, [Math]::Min(300, $rawBody.Length)))"
+          $hist = @(ConvertFrom-Json -InputObject $rawBody)
+          Write-Host "history after relaunch: $($hist.Count) task(s)"
+          Set-Content -Path history.json -Value $rawBody -NoNewline
           # documented recovery outcome: print the ACTUAL status, never assume one
-          $hit = @($tasks | Where-Object { $_.id -eq $crashId }) | Select-Object -First 1
-          $state = if ($hit) { [string]$hit.status } else { "<missing>" }
+          $hit = @($hist | Where-Object { $_.id -eq $crashId }) | Select-Object -First 1
+          $state = if ($null -eq $hit) { "<missing>" } elseif ($hit.status -is [string]) { $hit.status } else { "<non-scalar:$(@($hit.status) -join ',')>" }
           $docStates = @('NEW','PLANNING','WAITING_FOR_CHATGPT','PLAN_RECEIVED','PREPARING_EXECUTION','EXECUTING','MONITORING','TESTING','VERIFYING','DEBUGGING','WAITING_FOR_OWNER','PAUSED','FAILED','COMPLETED','CANCELLED')
           $cores = @(Get-Process -Name "jarvis-core" -ErrorAction SilentlyContinue)
           $desktops = @(Get-Process -Name "jarvis-desktop" -ErrorAction SilentlyContinue)
