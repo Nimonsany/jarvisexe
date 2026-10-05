@@ -112,3 +112,56 @@ rc14-era recheck in progress (Phase 13).
   the system `coreaudiod` daemon wedges periodically (`say`/`afplay` hang in
   HAL init) — system-level, root recovery only; recovered once (~7h), wedged
   again — env, not product.
+
+## Phases 13-16 — macOS m7 rerun + signing gate
+
+- **Phase 13 (m7)**: 13/13 GREEN at `e2d1a73` (36min incl. DMG rebuild),
+  `READY_FOR_V0.1.0_RC: YES` — log `/tmp/m10-agentA-m7.log`, report
+  `/tmp/m10-agentA-m7-report.json`; T9 force-kill recovery, T11 reinstall,
+  T12 uninstall all green.
+- **Phases 14-16 signing (`m10/signing`, merged `3c8fe96`)**: secrets-gated
+  macOS Developer ID keychain import → codesign → spctl → notarytool →
+  staple, and Windows Authenticode injected during bundling via `--config`
+  (keeps the updater `.sig` valid). Secrets absent → byte-identical skip
+  path, verdicts stay `DEVELOPER_ID_SIGNED=NO / NOTARIZED=NO` (never faked).
+  Credential interface: `docs/SIGNING_SECRETS.md`.
+
+## Asset/audit NEEDS_DIAGNOSTIC fixes (`11963d7`, commit subject "Phases 18/22/25/27")
+
+- Audit baseline: 19/19 rc14 assets present, artifact content scan 0
+  matches, SHA256SUMS re-verified 17/17; 4 open findings — all fixed:
+  - createTask captures the pre-create run error → `task failed to start:
+    <reason>` (fail-fast 153ms verified; cold boot keeps the 20s message;
+    orphan-cancel path preserved).
+  - release workflow `GITHUB_ENV` export split (`VER=`/`ARCH=` on separate
+    echos) — root cause of `build-info-macos.json.arch == ""`.
+  - `scripts/release/sbom-enrich.py` chained after `npm sbom` — SBOM
+    8 → 470 packages (react, react-dom, +460 Cargo.lock crates).
+  - release-notes sed strips the `v` tag prefix.
+- Full CI glob green in-branch: 44/44.
+
+## Phases 29-31 — kill -9 crash recovery + reinstall/uninstall safety
+
+- **Harness (`96c952e`)**:
+  - `scripts/release/linux-e2e.sh`: exit-code honesty fix (`LINUX_E2E_PASS:
+    no` exits 1), CRASH_RECOVERY block (force-kill both procs on a live
+    in-flight task → relaunch → history shows a documented state + exactly
+    one core), REINSTALL (dpkg -i over existing install), UNINSTALL_SAFETY
+    (seeded user file survives uninstall).
+  - `.github/workflows/windows-e2e.yml`: pre-kill liveness of BOTH procs,
+    kill -9 mid-flight → relaunch → CRASH_RECOVERY from live history,
+    reinstall-over-existing, ownership (unrelated notepad survives),
+    UNINSTALL_SAFETY (opencode + seed file survive).
+- **pwsh normalization fix (`20e301d`)**: `Invoke-RestMethod` delivers a
+  JSON array as ONE wrapped object — `@(...).Count` reported 1 for a 2-task
+  history and `[string]$hit.status` joined statuses into `PAUSED CANCELLED`,
+  failing the assertion while the product behaved correctly. Fixed:
+  `tasks raw:` first-300-chars evidence print, `history.json` = exact API
+  bytes, `ConvertFrom-Json -InputObject` + `@()` normalization, scalar
+  status guard (`<non-scalar:...>` otherwise).
+- **Windows E2E GREEN (run 37297293114, rc14 assets, merged to master)**:
+  `CRASH_RECOVERY: PASS (state=PAUSED)` · `REINSTALL: PASS (2 task(s)
+  preserved, 1 core)` · `OWNERSHIP: PASS — notepad survived` ·
+  `UNINSTALL_SAFETY: PASS`. Raw API = flat
+  `[{TASK-000002 PAUSED}, {TASK-000001 CANCELLED}]` — no data loss across
+  force-kill.
