@@ -72,6 +72,48 @@ jobs:
           mkdir -p apps/desktop/src-tauri/binaries
           cp dist-core/jarvis-core "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
           chmod +x "apps/desktop/src-tauri/binaries/jarvis-core-$TRIPLE"
+      # Phase 14 — Developer ID signing. Runs unconditionally so the skip log line
+      # always appears; only imports a keychain when both cert secrets are present.
+      - name: "Signing: setup (Phase 14)"
+        env:
+          MACOS_DEVELOPER_ID_CERT_P12: ${{ secrets.MACOS_DEVELOPER_ID_CERT_P12 }}
+          MACOS_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PROFILE: ${{ secrets.KEYCHAIN_PROFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_DEVELOPER_ID_CERT_P12:-}" ] || [ -z "${MACOS_DEVELOPER_ID_CERT_PASSWORD:-}" ]; then
+            echo "Signing: skipped (credentials not configured)"
+            echo "SIGNING_ACTIVE=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "Signing: importing Developer ID certificate into a temporary keychain"
+          KC="$RUNNER_TEMP/jarvis-signing.keychain-db"
+          KC_PASS="$(openssl rand -hex 24)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          echo "KEYCHAIN_PATH=$KC" >> "$GITHUB_ENV"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          printf '%s' "$MACOS_DEVELOPER_ID_CERT_P12" | base64 --decode > "$RUNNER_TEMP/jarvis-cert.p12"
+          security import "$RUNNER_TEMP/jarvis-cert.p12" -k "$KC" -P "$MACOS_DEVELOPER_ID_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/jarvis-cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          IDENTITY="$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(.*\)"/\1/p' | grep -m1 'Developer ID Application' || true)"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY="$(security find-identity -v -p codesigning "$KC" | sed -n 's/.*"\(.*\)"/\1/p' | grep -m1 . || true)"
+          fi
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::Developer ID certificate imported but no codesigning identity found"
+            exit 1
+          fi
+          echo "Signing identity: $IDENTITY"
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGNING_ACTIVE=true" >> "$GITHUB_ENV"
+          echo "Signing: credentials configured (Developer ID pipeline active)"
       - name: Build app + DMG
         run: npx tauri build --bundles app,dmg
         working-directory: apps/desktop/src-tauri
@@ -90,6 +132,61 @@ jobs:
           APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
           codesign -dv "$APP" > dist/macos-codesign.txt 2>&1 || true
           echo "VER=$VER ARCH=$ARCH" >> "$GITHUB_ENV"
+      # Phase 14 — verify Developer ID signature + hardened runtime. Gated on signing
+      # having run; when secrets are absent the step is a no-op so the unsigned build
+      # path is unchanged.
+      - name: Verify code signature (Phase 14)
+        run: |
+          set -euo pipefail
+          if [ "${SIGNING_ACTIVE:-false}" != "true" ]; then
+            echo "Signature verification: skipped (credentials not configured)"
+            exit 0
+          fi
+          APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
+          echo "== codesign --verify --deep --strict =="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          echo "== codesign -dv (authority chain + runtime flag) =="
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee dist/macos-codesign.txt
+          echo "== assertions =="
+          grep -q "Authority=Developer ID Application" dist/macos-codesign.txt \
+            || { echo "::error::signer is not a Developer ID Application identity"; exit 1; }
+          grep -q "flags=.*runtime" dist/macos-codesign.txt \
+            || { echo "::error::hardened runtime flag (0x10000) missing"; exit 1; }
+          echo "Developer ID signature verified with hardened runtime"
+      # Phase 15 — notarization + Gatekeeper. All gated: missing secrets => skip log,
+      # identical behavior to today. spctl --type execute only passes once notarized,
+      # so both spctl checks live here (after stapling) rather than in Phase 14.
+      - name: Notarize + Gatekeeper (Phase 15)
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PROFILE: ${{ secrets.KEYCHAIN_PROFILE }}
+        run: |
+          set -euo pipefail
+          HAVE_CREDS=false
+          if [ -n "${KEYCHAIN_PROFILE:-}" ] || { [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; }; then
+            HAVE_CREDS=true
+          fi
+          if [ "${SIGNING_ACTIVE:-false}" != "true" ] || [ "$HAVE_CREDS" != "true" ]; then
+            echo "Notarization: skipped (credentials not configured)"
+            exit 0
+          fi
+          APP=$(ls -d apps/desktop/src-tauri/target/release/bundle/macos/*.app | head -1)
+          DMG=$(ls dist/*.dmg | head -1)
+          echo "== notarytool submit ($DMG) =="
+          if [ -n "${KEYCHAIN_PROFILE:-}" ]; then
+            xcrun notarytool submit "$DMG" --keychain-profile "$KEYCHAIN_PROFILE" --wait
+          else
+            xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          fi
+          echo "== stapler staple =="
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          echo "== spctl Gatekeeper =="
+          spctl --assess --type install --verbose=2 "$DMG"
+          spctl --assess --type execute --verbose=2 "$APP"
+          echo "Notarization complete, stapled and Gatekeeper-verified"
       - name: Build info (manifest)
         run: python3 scripts/release/build-info.py macos "$ARCH"
       - name: Artifact inspection (Phase 26)
@@ -99,6 +196,16 @@ jobs:
           name: jarvis-macos
           path: dist/*
           if-no-files-found: error
+      # Phase 14 — always remove the temp keychain (even when earlier steps fail) so no
+      # private key material survives the job. No-op when signing was skipped.
+      - name: Cleanup temporary signing keychain (always)
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" && echo "deleted temporary signing keychain"
+          else
+            echo "no temporary keychain to clean up"
+          fi
 
   package-windows:
     name: Windows NSIS + MSI
@@ -130,12 +237,52 @@ jobs:
           & $csc /nologo /out:"apps\desktop\src-tauri\binaries\jarvis-core-$triple.exe" "scripts\release\jarvis-core-launcher.cs"
           if ($LASTEXITCODE -ne 0) { Write-Error "csc compile failed"; exit 1 }
           Get-Item "apps/desktop/src-tauri/binaries/jarvis-core-$triple.exe" | ForEach-Object { Write-Host "sidecar built: $($_.Name) $($_.Length) bytes" }
+      # Phase 16 — Windows Authenticode. Decodes the base64 pfx, imports it into the
+      # runner cert store and exposes Tauri's bundle.windows signing config only when
+      # both secrets are present. With secrets absent the build configs are byte-for-byte
+      # what they are today, so the unsigned path is unchanged.
+      - name: "Signing: setup (Phase 16)"
+        shell: pwsh
+        env:
+          WINDOWS_PFX: ${{ secrets.WINDOWS_PFX }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $nsis = '{"bundle":{"windows":{"nsis":{"installMode":"currentUser"}}}}'
+          $msi = ''
+          if (-not $env:WINDOWS_PFX -or -not $env:WINDOWS_PFX_PASSWORD) {
+            Write-Host "Signing: skipped (credentials not configured)"
+          } else {
+            $pfx = Join-Path $env:RUNNER_TEMP 'jarvis-codesign.pfx'
+            try {
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX))
+              $secure = ConvertTo-SecureString $env:WINDOWS_PFX_PASSWORD -AsPlainText -Force
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $secure | Select-Object -Last 1
+              $t = $cert.Thumbprint
+              if (-not $t) { throw "pfx imported but no thumbprint returned" }
+              $sign = '"certificateThumbprint":"' + $t + '","digestAlgorithm":"sha256","timestampUrl":"http://timestamp.digicert.com","tsp":true'
+              $nsis = '{"bundle":{"windows":{"nsis":{"installMode":"currentUser"},' + $sign + '}}}'
+              $msi  = '{"bundle":{"windows":{' + $sign + '}}}'
+              "WINDOWS_SIGN_ACTIVE=true" | Out-File -Append -FilePath $env:GITHUB_ENV
+              Write-Host "Signing: certificate imported (thumbprint $t) — tauri signs sidecar, main exe and installers"
+            } finally {
+              Remove-Item $pfx -ErrorAction SilentlyContinue
+            }
+          }
+          "NSIS_CONFIG=$nsis" | Out-File -Append -FilePath $env:GITHUB_ENV
+          "MSI_CONFIG=$msi" | Out-File -Append -FilePath $env:GITHUB_ENV
       - name: Build NSIS (primary)
-        run: npx tauri build --bundles nsis --config '{"bundle":{"windows":{"nsis":{"installMode":"currentUser"}}}}'
+        shell: pwsh
+        run: npx tauri build --bundles nsis --config $env:NSIS_CONFIG
         working-directory: apps/desktop/src-tauri
       - name: Build MSI (secondary, non-blocking)
         continue-on-error: true
-        run: npx tauri build --bundles msi
+        shell: pwsh
+        run: |
+          if ($env:MSI_CONFIG) {
+            npx tauri build --bundles msi --config $env:MSI_CONFIG
+          } else {
+            npx tauri build --bundles msi
+          }
         working-directory: apps/desktop/src-tauri
       - name: Name artifacts
         shell: pwsh
@@ -151,6 +298,22 @@ jobs:
           Copy-Item $nsisSig.FullName "dist/JARVIS_${ver}_x64-setup.exe.sig"
           $msi = Get-ChildItem apps/desktop/src-tauri/target/release/bundle/msi/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($msi) { Copy-Item $msi.FullName "dist/JARVIS_${ver}_x64.msi" } else { Write-Warning "MSI not produced (secondary)" }
+      # Phase 16 — verify Authenticode on the installers. Gated, no-op when signing skipped.
+      - name: Verify Authenticode signature (Phase 16)
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_SIGN_ACTIVE -ne 'true') {
+            Write-Host "Windows signature verification: skipped (credentials not configured)"
+            exit 0
+          }
+          $targets = Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $targets) { throw "no installers found in dist/" }
+          foreach ($t in $targets) {
+            $s = Get-AuthenticodeSignature -FilePath $t.FullName
+            Write-Host ("{0}: {1} ({2})" -f $t.Name, $s.Status, $s.SignerCertificate.Subject)
+            if ($s.Status -ne 'Valid') { throw "signature verification failed: $($t.Name)" }
+          }
+          Write-Host "Authenticode signature verified"
       - name: Build info (manifest)
         shell: pwsh
         run: python scripts/release/build-info.py windows x64
