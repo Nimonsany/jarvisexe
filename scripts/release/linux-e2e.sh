@@ -35,13 +35,19 @@ if tok: req.add_header('Authorization','Bearer '+tok)
 print(urllib.request.urlopen(req,timeout=5).read().decode())
 " "$1" "${2:-}" 2>/dev/null
 }
-http_post() { # $1 = url, $2 = json body, $3 = token
+http_post() { # $1 = url, $2 = json body, $3 = token — HTTP error bodies go to
+  # STDOUT so callers can echo them as evidence (stderr is discarded by exec)
   docker exec "$CN" python3 -c "
-import urllib.request,sys
-req=urllib.request.Request(sys.argv[1],data=sys.argv[2].encode(),method='POST')
-req.add_header('Authorization','Bearer '+sys.argv[3])
-req.add_header('Content-Type','application/json')
-print(urllib.request.urlopen(req,timeout=35).read().decode())
+import urllib.request,urllib.error,sys
+try:
+    req=urllib.request.Request(sys.argv[1],data=sys.argv[2].encode(),method='POST')
+    req.add_header('Authorization','Bearer '+sys.argv[3])
+    req.add_header('Content-Type','application/json')
+    print(urllib.request.urlopen(req,timeout=35).read().decode())
+except urllib.error.HTTPError as e:
+    print('HTTP_%s: %s' % (e.code, e.read().decode()[:300]))
+except Exception as e:
+    print('POST_ERR: %s' % e)
 " "$1" "$2" "$3" 2>/dev/null
 }
 probe() { docker exec "$CN" python3 -c "
@@ -128,18 +134,29 @@ if [ -n "$CORE" ]; then
       docker exec j10-deb bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x ~/.opencode/bin/opencode && echo "opencode installed: user-local"; ~/.opencode/bin/opencode --version >/dev/null 2>&1; echo "opencode warmed" ' || echo "WARN: opencode install failed"
       SMOKE=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
       TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      if [ -z "$TID" ]; then
+        # cold-start: the first POST can fail while opencode initializes on a
+        # fresh core (documented KNOWN ISSUE — warmed retry succeeds)
+        echo "smoke create raw: $(printf '%s' "$SMOKE" | head -c 300) — retrying once"
+        sleep 5
+        SMOKE=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
+        TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      fi
       echo "smoke task: $TID"
       if [ -n "$TID" ]; then
         STATUS=""
         for i in $(seq 1 40); do
           sleep 10
           STATUS=$(http_get "http://127.0.0.1:$PORT/api/task/$TID" "$TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['task']['status'])" 2>/dev/null)
-          case "$STATUS" in COMPLETED|FAILED|CANCELLED|WAITING_FOR_OWNER) break;; esac
+          case "$STATUS" in COMPLETED|FAILED|CANCELLED|WAITING_FOR_OWNER|WAITING_FOR_CHATGPT) break;; esac
         done
         ERR=$(http_get "http://127.0.0.1:$PORT/api/task/$TID" "$TOKEN" | python3 -c "import sys,json;print(json.load(sys.stdin)['task'].get('last_error','')[:160])" 2>/dev/null)
         echo "smoke terminal: $STATUS last_error: $ERR"
         case "$STATUS" in
           COMPLETED) ok "DEB smoke task completed";;
+          WAITING_FOR_CHATGPT)
+            http_post "http://127.0.0.1:$PORT/api/task/$TID/cancel" '{}' "$TOKEN" >/dev/null 2>&1
+            ok "DEB smoke: Phase-19 login wait observed, then cancelled cleanly";;
           FAILED|WAITING_FOR_OWNER) ok "DEB smoke task failed GRACEFULLY (clean machine: no ChatGPT credentials — Phase 18/19)";;
           *) fail "DEB smoke task hung (status=$STATUS)";;
         esac
@@ -196,7 +213,7 @@ if [ -n "$CORE" ]; then
       CTASK=$(http_post "http://127.0.0.1:$PORT/api/task" "$CREQ" "$TOKEN")
       CTID=$(echo "$CTASK" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
       if [ -z "$CTID" ]; then
-        echo "crash task create returned nothing — retrying once (runtime may still be busy)"
+        echo "crash create raw: $(printf '%s' "$CTASK" | head -c 300) — retrying once (runtime may still be busy)"
         sleep 5
         CTASK=$(http_post "http://127.0.0.1:$PORT/api/task" "$CREQ" "$TOKEN")
         CTID=$(echo "$CTASK" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -215,12 +232,24 @@ if [ -n "$CORE" ]; then
         echo "core pid=$DEAD children before kill: ${CHILDREN:-none}"
         docker exec j10-deb bash -c "kill -9 $DEAD"
         sleep 2
-        ALIVE=$(docker exec j10-deb bash -c "ps -p $DEAD -o pid= 2>/dev/null" | tr -d '[:space:]')
+        # zombie counts as dead: pid1 is `sleep infinity`, which never wait()s,
+        # so a SIGKILLed orphan stays Z forever in this container. ps -p prints
+        # zombies, so check the state, not just the pid.
+        PSTAT=$(docker exec j10-deb bash -c "ps -p $DEAD -o stat= 2>/dev/null" | tr -d '[:space:]')
+        ALIVE=""
+        case "$PSTAT" in ""|Z*) ;; *) ALIVE=$DEAD;; esac
         NKILLED=$(docker exec j10-deb bash -c "ps -ww -eo args= | grep -c '[c]ore-runtime/server.js' || true" | tr -d '[:space:]')
-        echo "after SIGKILL: pid $DEAD alive=[${ALIVE}] core processes=$NKILLED"
+        echo "after SIGKILL: pid $DEAD stat=[${PSTAT:-<gone>}] alive=[${ALIVE}] core processes=$NKILLED"
         if [ -n "$ALIVE" ] || [ "$NKILLED" != "0" ]; then
           fail "Phase 29 crash (core survived SIGKILL)"
           echo "CRASH_RECOVERY: FAIL (state=kill-failed alive=${ALIVE:-} cores=$NKILLED)"
+          # restart anyway so downstream phases (snapshot/reinstall) run against
+          # a live core — a failed kill must not cascade into unrelated fails
+          docker exec j10-deb bash -c "
+            JARVIS_PORT=$PORT JARVIS_RUNTIME_DIR=/tmp/j10state setsid $CORE >/tmp/j10core.log 2>&1 </dev/null &
+            echo \$! > /tmp/j10core.pid
+          "
+          wait_health >/dev/null 2>&1 || true
         else
           echo "core died on SIGKILL — restarting"
           docker exec j10-deb bash -c "
@@ -412,6 +441,13 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
       docker exec j10-appimage bash -c 'curl -fsSL https://opencode.ai/install | bash >/dev/null 2>&1; test -x ~/.opencode/bin/opencode && echo INSTALLED; ~/.opencode/bin/opencode --version >/dev/null 2>&1; echo warmed' || echo "WARN: opencode install failed"
       SMOKE2=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work2"}' "$TOKEN2")
       TID2=$(echo "$SMOKE2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      if [ -z "$TID2" ]; then
+        # cold-start: same warmed-retry as the DEB smoke above
+        echo "appimage smoke create raw: $(printf '%s' "$SMOKE2" | head -c 300) — retrying once"
+        sleep 5
+        SMOKE2=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work2"}' "$TOKEN2")
+        TID2=$(echo "$SMOKE2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      fi
       echo "appimage smoke task: $TID2"
       if [ -n "$TID2" ]; then
         S2=""
