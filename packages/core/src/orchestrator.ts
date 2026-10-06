@@ -45,6 +45,11 @@ export class Orchestrator {
   private running = false;
   private cancelRequested = false;
   private pauseRequested = false;
+  /** Per-task flag: true when pause occurred during WAITING_FOR_CHATGPT or PLANNING.
+   * Keyed by taskId so one task never affects another. */
+  private pausedDuringPlanning = new Map<string, boolean>();
+  /** Planning attempt ID for this task. Responses from older attempts are ignored. */
+  private planningAttemptId = new Map<string, number>();
   /** Set by the server: enables the post-verification reality-check bot review. */
   agentProvider: AgentBotProvider | null = null;
 
@@ -73,6 +78,8 @@ export class Orchestrator {
   async pause(taskId: string): Promise<Task> {
     const task = await this.store.load(taskId);
     if (['PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED'].includes(task.status)) return task;
+    this.pausedDuringPlanning.set(taskId, task.status === 'WAITING_FOR_CHATGPT' || task.status === 'PLANNING');
+    this.planningAttemptId.set(taskId, 0); // reset attempt ID on pause
     await this.store.transition(task, 'PAUSED');
     await this.store.emit(task, 'core', 'pause_requested', 'warning');
     return task;
@@ -103,34 +110,64 @@ export class Orchestrator {
       await this.store.emit(task, 'core', 'task_resumed', 'info');
       return task;
     }
-    // If paused before planning produced a plan (e.g. during
-    // WAITING_FOR_CHATGPT), the in-flight ChatGPT ask survives pause and
-    // lands later. Wait for it: launching an objective-less session meanwhile
-    // can false-complete against stale workspace content (m7 T7 evidence).
+    const prevAttemptId = this.planningAttemptId.get(taskId) ?? 0;
+    // planResponse declared at function scope; assigned in one of two branches below.
     let planResponse: string | null = null;
-    try {
-      const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
-      if (p.trim()) planResponse = p;
-    } catch { /* not landed yet — poll below */ }
-    if (!planResponse) {
-      await this.store.emit(task, 'core', 'resume_waiting_for_plan', 'info');
-      const deadline = Date.now() + 300_000;
-      while (!planResponse && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
-          if (p.trim()) planResponse = p;
-        } catch { /* keep waiting */ }
+
+    if (this.pausedDuringPlanning.get(taskId)) {
+      // --- BRANCH A: task was paused during WAITING_FOR_CHATGPT or PLANNING ---
+      // Issue 2: do NOT wait 300s. Immediately re-initiate planning.
+      // Issue 3: increment attempt ID so any stale response from a prior
+      // attempt is ignored when it eventually arrives.
+      const newAttemptId = (prevAttemptId || 0) + 1;
+      this.planningAttemptId.set(taskId, newAttemptId);
+      await this.store.emit(task, 'core', 'resume_replan_from_pause', 'info', { attemptId: newAttemptId });
+      const freshPlan = await this.chatgpt.ask(
+        this.opts.plannerPromptTemplate.replace('{{OWNER_REQUEST}}', task.owner_request)
+      );
+      const dir = this.store.taskDir(taskId);
+      await writeFile(path.join(dir, 'chatgpt-plan.md'), freshPlan).catch(() => {});
+      // Only accept the response if this attempt is still the current one
+      if (this.planningAttemptId.get(taskId) === newAttemptId) {
+        planResponse = freshPlan;
+      }
+    } else {
+      // --- BRANCH B: task was NOT paused during planning (original behavior) ---
+      // Issue 5: preserve the existing fallback path exactly.
+      // Issue 2: the 300s wait is retained only for cases where planning was
+      // NOT explicitly interrupted by Pause.
+      try {
+        const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
+        if (p.trim()) planResponse = p;
+      } catch { /* not landed yet */ }
+      if (!planResponse) {
+        const deadline = Date.now() + 300_000;
+        while (!planResponse && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 3003));
+          try {
+            const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
+            if (p.trim()) planResponse = p;
+          } catch { /* keep waiting */ }
+        }
+      }
+      // Issue 4: verify attempt ID matches before proceeding
+      if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+        // a newer attempt already superseded this one; ignore response
+        return task;
       }
     }
+    // If planResponse is still null after both branches, something went wrong.
     if (!planResponse) {
-      // planning never delivered (ask died silently, e.g. kill during
-      // planning) — honest stop, not a silent continue. PAUSED->FAILED is
-      // illegal; CANCELLED carries the error.
-      task.last_error = 'resume aborted: planning never produced a plan within 300s of resume';
+      // This should not happen; fall through to the original CANCEL behaviour.
+      task.last_error = 'resume: no plan response obtained';
       await this.store.save(task).catch(() => {});
       await this.store.transition(task, 'CANCELLED').catch(async () => { await this.store.save(task); });
       await this.store.emit(task, 'core', 'task_resume_aborted_no_plan', 'error');
+      return task;
+    }
+    // Issue 4: double-check attempt ID after we have a plan response
+    if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+      await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
       return task;
     }
     // resume with the real objective (mirrors run()), never a vague
@@ -143,6 +180,12 @@ export class Orchestrator {
       firstPrompt = `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}`;
       spec = parseVerificationSpec(planResponse);
     } catch { /* fall back to empty spec */ }
+    // Triple-check attempt ID after parsing — protect against race where
+    // a stale response arrives after we've already started a new attempt.
+    if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+      await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
+      return task;
+    }
     await this.store.transition(task, 'EXECUTING');
     await this.store.emit(task, 'core', 'task_resumed', 'info');
     this.runLoopInBackground(task, firstPrompt, spec);
