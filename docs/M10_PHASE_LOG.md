@@ -165,3 +165,34 @@ rc14-era recheck in progress (Phase 13).
   `UNINSTALL_SAFETY: PASS`. Raw API = flat
   `[{TASK-000002 PAUSED}, {TASK-000001 CANCELLED}]` — no data loss across
   force-kill.
+
+## Linux E2E reruns — zombie false-positive + clock-jump smoke root cause (all green)
+
+- **run1 (rc14, `LINUX_E2E_PASS: no`, 15/5)**: kill-check used `ps -p` pid
+  presence — but pid1 is `sleep infinity`, which never reaps, so the
+  SIGKILLed core stayed a **zombie** and read as alive → false
+  `CRASH_RECOVERY: FAIL` + snapshot/reinstall cascades (core never
+  restarted). Both smokes: `POST_ERR: timed out` (35s client).
+- **Fixes (`aa407f4`)**: zombie-aware kill check (`stat` `Z*` = dead),
+  restart core on kill-fail (no cascade), smoke warmed-retry + HTTP
+  error-body evidence, AppImage smoke retry, crash-create raw echo.
+- **run2 (17/2)**: crash recovery, reinstall (+history preserved),
+  uninstall safety, AppImage all PASS. Smokes still timed out → probed
+  with a timed diagnostic container:
+  - `opencode --version`: 3-4s via bash, **14s via node-spawn**; bare
+    `opencode` not on core's PATH (ENOENT) — `discoverOpencode` carries it.
+  - POST with 120s timeout → `HTTP_500 "task did not start within 20s"`
+    at 33s (120 slow `listAll` iterations); record materialized minutes
+    later, then FAILED gracefully in 1s.
+  - **Root cause proven**: host sleep/wake + Docker VM resyncs jumped the
+    container clock mid-request, breaking `createTask`'s
+    `created_at >= startedAt - 1000` match. Same POST on stable clocks →
+    **200 in 0.0s with record**. Product healthy; environment flake.
+- **Fixes (`a351c44`)**: POST timeout 35→120s; 3-min late-registration
+  poll on `/api/tasks` for both smokes (clock-jump tolerant); run under
+  `caffeinate -i` (no sleep-induced jumps).
+- **run3 GREEN (19/19, `LINUX_E2E_PASS: yes`, exit 0)**: DEB smoke
+  `TASK-000001` created instantly → FAILED gracefully (node18/ChatGPT
+  actionable error) · crash recovery (state=FAILED) · reinstall (+history
+  preserved) · uninstall safety · AppImage smoke graceful-fail + removal.
+  Merged ff to master (`a351c44`).
