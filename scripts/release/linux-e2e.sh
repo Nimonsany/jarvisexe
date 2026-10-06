@@ -43,7 +43,7 @@ try:
     req=urllib.request.Request(sys.argv[1],data=sys.argv[2].encode(),method='POST')
     req.add_header('Authorization','Bearer '+sys.argv[3])
     req.add_header('Content-Type','application/json')
-    print(urllib.request.urlopen(req,timeout=35).read().decode())
+    print(urllib.request.urlopen(req,timeout=120).read().decode())
 except urllib.error.HTTPError as e:
     print('HTTP_%s: %s' % (e.code, e.read().decode()[:300]))
 except Exception as e:
@@ -141,6 +141,17 @@ if [ -n "$CORE" ]; then
         sleep 5
         SMOKE=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work"}' "$TOKEN")
         TID=$(echo "$SMOKE" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      fi
+      if [ -z "$TID" ]; then
+        # clock-jump tolerant: the record can materialize minutes after a
+        # 500/timeout (Docker VM resync breaks the 1s created_at match window
+        # — evidenced in run2 + probe). Poll /api/tasks for the late record.
+        echo "smoke create: no id after warmed retry — polling /api/tasks for late registration (up to 3 min)"
+        for i in $(seq 1 18); do
+          sleep 10
+          TID=$(http_get "http://127.0.0.1:$PORT/api/tasks" "$TOKEN" | python3 -c "import sys,json;ts=json.load(sys.stdin);print(next((t['id'] for t in ts if 'j10-linux-ok.txt' in t.get('owner_request','')),''))" 2>/dev/null)
+          if [ -n "$TID" ]; then echo "smoke late registration: $TID (poll $i/18)"; break; fi
+        done
       fi
       echo "smoke task: $TID"
       if [ -n "$TID" ]; then
@@ -447,6 +458,15 @@ if [ $APP_RC -eq 0 ] && [ -n "$CORE2" ]; then
         sleep 5
         SMOKE2=$(http_post "http://127.0.0.1:$PORT/api/task" '{"request":"Create a temporary file named j10-linux-ok.txt in the project directory containing exactly the text JARVIS_LINUX_RUNTIME_OK (plain, unquoted). Create no other files.","project":"/tmp/j10work2"}' "$TOKEN2")
         TID2=$(echo "$SMOKE2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+      fi
+      if [ -z "$TID2" ]; then
+        # same late-registration tolerance as the DEB smoke above
+        echo "appimage smoke create: no id after warmed retry — polling /api/tasks for late registration (up to 3 min)"
+        for i in $(seq 1 18); do
+          sleep 10
+          TID2=$(http_get "http://127.0.0.1:$PORT/api/tasks" "$TOKEN2" | python3 -c "import sys,json;ts=json.load(sys.stdin);print(next((t['id'] for t in ts if 'j10-linux-ok.txt' in t.get('owner_request','')),''))" 2>/dev/null)
+          if [ -n "$TID2" ]; then echo "appimage smoke late registration: $TID2 (poll $i/18)"; break; fi
+        done
       fi
       echo "appimage smoke task: $TID2"
       if [ -n "$TID2" ]; then
