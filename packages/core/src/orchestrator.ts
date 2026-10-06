@@ -103,15 +103,49 @@ export class Orchestrator {
       await this.store.emit(task, 'core', 'task_resumed', 'info');
       return task;
     }
-    // re-parse the verification spec from the stored plan if available
-    let spec: SoftwareVerificationSpec | null = null;
+    // If paused before planning produced a plan (e.g. during
+    // WAITING_FOR_CHATGPT), the in-flight ChatGPT ask survives pause and
+    // lands later. Wait for it: launching an objective-less session meanwhile
+    // can false-complete against stale workspace content (m7 T7 evidence).
+    let planResponse: string | null = null;
     try {
-      const plan = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
-      spec = parseVerificationSpec(plan);
+      const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
+      if (p.trim()) planResponse = p;
+    } catch { /* not landed yet — poll below */ }
+    if (!planResponse) {
+      await this.store.emit(task, 'core', 'resume_waiting_for_plan', 'info');
+      const deadline = Date.now() + 300_000;
+      while (!planResponse && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const p = await readFile(path.join(this.store.taskDir(taskId), 'chatgpt-plan.md'), 'utf8');
+          if (p.trim()) planResponse = p;
+        } catch { /* keep waiting */ }
+      }
+    }
+    if (!planResponse) {
+      // planning never delivered (ask died silently, e.g. kill during
+      // planning) — honest stop, not a silent continue. PAUSED->FAILED is
+      // illegal; CANCELLED carries the error.
+      task.last_error = 'resume aborted: planning never produced a plan within 300s of resume';
+      await this.store.save(task).catch(() => {});
+      await this.store.transition(task, 'CANCELLED').catch(async () => { await this.store.save(task); });
+      await this.store.emit(task, 'core', 'task_resume_aborted_no_plan', 'error');
+      return task;
+    }
+    // resume with the real objective (mirrors run()), never a vague
+    // continue-prompt; re-parse the verification spec from the landed plan.
+    let spec: SoftwareVerificationSpec | null = null;
+    let firstPrompt = `Continue the task from its persisted state. Inspect existing files in the project directory, finish whatever remains, run the tests, and report the result honestly.`;
+    try {
+      const parsed = parsePlanResponse(planResponse);
+      await writeFile(path.join(this.store.taskDir(taskId), 'opencode-prompt.md'), annotateInjections(parsed.opencodePrompt)).catch(() => {});
+      firstPrompt = `${this.opts.opencodeRules}\n\n${parsed.opencodePrompt}`;
+      spec = parseVerificationSpec(planResponse);
     } catch { /* fall back to empty spec */ }
     await this.store.transition(task, 'EXECUTING');
     await this.store.emit(task, 'core', 'task_resumed', 'info');
-    this.runLoopInBackground(task, `Continue the task from its persisted state. Inspect existing files in the project directory, finish whatever remains, run the tests, and report the result honestly.`, spec);
+    this.runLoopInBackground(task, firstPrompt, spec);
     return task;
   }
 
