@@ -196,3 +196,24 @@ rc14-era recheck in progress (Phase 13).
   actionable error) · crash recovery (state=FAILED) · reinstall (+history
   preserved) · uninstall safety · AppImage smoke graceful-fail + removal.
   Merged ff to master (`a351c44`).
+
+## m7 T7 root cause — resume-before-plan race (`c0a81ee`)
+
+- **Symptom (3/4 m7 runs)**: T7 task COMPLETED (+verifier PASSED) but
+  `m7-pause.txt` missing (ENOENT), or resume → FAILED. Modes vary with
+  timing; T6 consistently green alongside.
+- **Trace (snapshotted task dir)**: paused during WAITING_FOR_CHATGPT →
+  resumed before the plan landed → session 1 ran the 164-char generic
+  continue-prompt with NO plan, inspected a workspace containing T6's
+  `m7-smoke.txt`, declared "SMOKE PASS", exited 0 → vacuous-spec
+  verification (`steps: []`) → false COMPLETED. The loop never re-parsed
+  the spec after the plan arrived late.
+- **Fix (`orchestrator.resume`)**: when paused pre-plan, poll up to 300s
+  for the in-flight ask to land (pause never aborts it); timeout →
+  CANCELLED with clear error (PAUSED→FAILED is illegal). Resume with the
+  full plan-derived objective (mirrors `run()`), re-parse spec from the
+  landed plan — never an objective-less first session.
+- **Verified**: focused resume test — post-plan immediate EXECUTING +
+  objective prompt; late plan (+10s) → waited 12s → EXECUTING; no plan →
+  CANCELLED at 301s with clear error. Minimal T7 repro of pause/resume
+  mechanics PASSED on `c60c1db`.
