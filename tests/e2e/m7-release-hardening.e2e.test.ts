@@ -322,6 +322,8 @@ test('M7 release hardening E2E', async () => {
         const snap = id ? { task: await taskOf(id).catch(() => null), reports: REPORTS.t7 ?? null, pauseFile: (() => { try { return readFileSync(path.join(WORKSPACE, 'm7-pause.txt'), 'utf8'); } catch { return null; } })() } : { reports: REPORTS.t7 ?? null };
         writeFileSync('/tmp/jarvis-t7-evidence.json', JSON.stringify(snap, null, 2) + '\n');
       } catch (e) { console.log(`  evidence dump failed: ${e}`); }
+      // core log carries the chatgpt automation trail ('Please sign in…', ask retries)
+      try { const lg = readFileSync(path.join(M7_ROOT, 'logs/core.log'), 'utf8'); writeFileSync('/tmp/jarvis-t7-core.log', lg.slice(-400_000)); } catch (e) { console.log(`  core log dump failed: ${e}`); }
     }
   });
 
@@ -420,7 +422,9 @@ test('M7 release hardening E2E', async () => {
     assert.match(cl, /M7_CLEANUP_OK/);
     assert.ok(!existsSync(M7_ROOT), 'disposable root removed');
     assert.equal(corePids().length, 0, 'no core left on our port');
-    const guiLeft = (() => { try { return execFileSync('pgrep', ['-f', M7_ROOT], { encoding: 'utf8' }).split('\n').filter(Boolean); } catch { return []; } })();
+    const procs = (): string[] => { try { return execFileSync('pgrep', ['-f', M7_ROOT], { encoding: 'utf8' }).split('\n').filter(Boolean); } catch { return []; } };
+    let guiLeft = procs(); // Chrome can take a few seconds to finish tearing down
+    for (let i = 0; i < 15 && guiLeft.length > 0; i++) { await sleep(1000); guiLeft = procs(); }
     assert.equal(guiLeft.length, 0, 'no processes left referencing our root');
     REPORTS.t12 = 'uninstalled + cleaned';
   };
