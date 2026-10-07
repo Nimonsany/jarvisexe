@@ -39,6 +39,12 @@ const results: Record<string, { ok: boolean; detail?: string }> = {};
 const REPORTS: Record<string, any> = {}; // evidence for m7-report.json
 let aborted = false;
 
+// JARVIS_M7_ONLY=T7 → diagnostic run: T1-T6/T12/T13 still execute (build,
+// install, launch, teardown), only the listed functional phases run; the
+// rest are recorded as filtered, not as failures. Unset = full M7.
+const M7_ONLY = (process.env.JARVIS_M7_ONLY ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const SETUP_PHASES = new Set(['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
+
 const sh = (cmd: string, args: string[] = [], timeout?: number): string =>
   execFileSync(cmd, args, {
     cwd: REPO,
@@ -49,6 +55,12 @@ const sh = (cmd: string, args: string[] = [], timeout?: number): string =>
   });
 
 const phase = async (name: string, fn: () => Promise<void>, always = false): Promise<void> => {
+  const id = (name.match(/^T\d+/) ?? [''])[0];
+  if (M7_ONLY.length && !always && !SETUP_PHASES.has(id) && !M7_ONLY.includes(id)) {
+    results[name] = { ok: true, detail: 'filtered (JARVIS_M7_ONLY)' };
+    console.log(`- ${name}: filtered (JARVIS_M7_ONLY)`);
+    return;
+  }
   if (aborted && !always) { results[name] = { ok: false, detail: 'skipped after earlier failure' }; console.log(`- ${name}: skipped`); return; }
   try { await fn(); results[name] = { ok: true }; console.log(`✔ ${name}`); }
   catch (e) {
@@ -80,7 +92,7 @@ async function api(p: string, method = 'GET', body?: unknown): Promise<Response>
   throw lastErr;
 }
 
-async function taskOf(id: string): Promise<{ status: string; verification_status?: string; events?: { component: string; event: string; severity: string; data?: Record<string, unknown> }[] }> {
+async function taskOf(id: string): Promise<{ status: string; verification_status?: string; events?: { timestamp: string; component: string; event: string; severity: string; data?: Record<string, unknown> }[] }> {
   const r = await api(`/api/task/${id}`);
   if (!r.ok) throw new Error(`GET /api/task/${id} → ${r.status}`);
   const j = (await r.json()) as { task: { status: string; verification_status: string }; events: [] };
@@ -232,6 +244,7 @@ test('M7 release hardening E2E', async () => {
   let smokeTaskId = '';
   await phase('T6 smoke task — full chain (FR-8)', async () => {
     sh(path.join(SCRIPTS, 'm7-clean-install.sh'), ['launch-core', '240'], 600_000);
+    if (M7_ONLY.length) { REPORTS.t6 = 'launch-core only (filtered run)'; return; }
     smokeTaskId = await postTask(
       'Create a file named m7-smoke.txt in the project directory containing exactly the text JARVIS_M7_SMOKE_OK (plain, unquoted). Create no other files.',
       WORKSPACE,
@@ -265,28 +278,51 @@ test('M7 release hardening E2E', async () => {
   });
 
   await phase('T7 pause / resume (FR-9/10)', async () => {
-    const id = await postTask(
-      'Create a file named m7-pause.txt in the project directory containing exactly PAUSE_RESUME_OK. Create no other files.',
-      WORKSPACE,
-    );
-    await until(`task ${id} pausable`, async () => ['WAITING_FOR_CHATGPT', 'EXECUTING', 'MONITORING'].includes((await taskOf(id)).status), 900, 5000);
-    const pr = await api(`/api/task/${id}/pause`, 'POST');
-    assert.ok(pr.ok, `pause → ${pr.status}`);
-    await until(`task ${id} PAUSED`, async () => (await taskOf(id)).status === 'PAUSED', 60, 2000);
-    await sleep(3000);
-    const before = (await taskOf(id)).events!.length;
-    await sleep(10_000); // FR-9: no new consequential steps while paused
-    const t7 = await taskOf(id);
-    assert.equal(t7.status, 'PAUSED', 'stays PAUSED');
-    assert.equal(t7.events!.length, before, `no events while paused (before=${before} after=${t7.events!.length})`);
+    let id = '';
+    try {
+      id = await postTask(
+        'Create a file named m7-pause.txt in the project directory containing exactly PAUSE_RESUME_OK. Create no other files.',
+        WORKSPACE,
+      );
+      await until(`task ${id} pausable`, async () => ['WAITING_FOR_CHATGPT', 'EXECUTING', 'MONITORING'].includes((await taskOf(id)).status), 900, 5000);
+      const pr = await api(`/api/task/${id}/pause`, 'POST');
+      assert.ok(pr.ok, `pause → ${pr.status}`);
+      await until(`task ${id} PAUSED`, async () => (await taskOf(id)).status === 'PAUSED', 60, 2000);
+      await sleep(3000);
+      const before = (await taskOf(id)).events!.length;
+      await sleep(10_000); // FR-9: no new consequential steps while paused
+      const t7 = await taskOf(id);
+      assert.equal(t7.status, 'PAUSED', 'stays PAUSED');
+      assert.equal(t7.events!.length, before, `no events while paused (before=${before} after=${t7.events!.length})`);
 
-    const rr = await api(`/api/task/${id}/resume`, 'POST');
-    assert.ok(rr.ok, `resume → ${rr.status}`);
-    await until(`task ${id} COMPLETED after resume`, async () => ['COMPLETED', 'FAILED'].includes((await taskOf(id)).status), 1800, 10_000);
-    const done = await taskOf(id);
-    assert.equal(done.status, 'COMPLETED', `resume completed (got ${done.status})`); // FR-10
-    assert.equal(readFileSync(path.join(WORKSPACE, 'm7-pause.txt'), 'utf8').trim(), 'PAUSE_RESUME_OK', 'no duplicate/corrupt output');
-    REPORTS.t7 = { taskId: id, pauseEvents: before, finalEvents: done.events!.length };
+      const resumeAt = Date.now();
+      const rr = await api(`/api/task/${id}/resume`, 'POST');
+      assert.ok(rr.ok, `resume → ${rr.status}`);
+      await until(`task ${id} COMPLETED after resume`, async () => ['COMPLETED', 'FAILED'].includes((await taskOf(id)).status), 1800, 10_000);
+      const done = await taskOf(id);
+      assert.equal(done.status, 'COMPLETED', `resume completed (got ${done.status})`); // FR-10
+      assert.equal(readFileSync(path.join(WORKSPACE, 'm7-pause.txt'), 'utf8').trim(), 'PAUSE_RESUME_OK', 'no duplicate/corrupt output');
+
+      // gate evidence: stale attempts, fresh-attempt id, resume/OpenCode starts
+      const evs = done.events!;
+      const stale = evs.filter((e) => e.event === 'planner_response_stale');
+      const replanIds = evs.filter((e) => e.event === 'resume_replan_from_pause').map((e) => e.data?.attemptId);
+      const resumedEvs = evs.filter((e) => e.event === 'task_resumed');
+      const sessions = evs.filter((e) => e.event === 'session_start').length;
+      assert.equal(stale.length, 0, `planner_response_stale fired for valid attempt(s): ${JSON.stringify(stale.map((e) => e.data))}`);
+      assert.equal(resumedEvs.length, 1, `task_resumed exactly once (got ${resumedEvs.length})`);
+      assert.ok(sessions >= 1, `OpenCode started after resume (session_start=${sessions})`);
+      // the bug symptom: resume() returns before task_resumed → nothing after it for 300s+
+      const resumeToResumedSec = resumedEvs.length ? Math.max(0, Math.round((Date.parse(resumedEvs[0].timestamp) - resumeAt) / 1000)) : -1;
+      assert.ok(resumeToResumedSec >= 0 && resumeToResumedSec < 300, `no 300s wait: resume→task_resumed ${resumeToResumedSec}s`);
+      REPORTS.t7 = { taskId: id, pauseEvents: before, finalEvents: evs.length, stale: stale.length, replanAttemptIds: replanIds, taskResumed: resumedEvs.length, sessionStarts: sessions, resumeToResumedSec };
+    } finally {
+      // T12 deletes M7_ROOT even on failure — dump evidence first
+      try {
+        const snap = id ? { task: await taskOf(id).catch(() => null), reports: REPORTS.t7 ?? null, pauseFile: (() => { try { return readFileSync(path.join(WORKSPACE, 'm7-pause.txt'), 'utf8'); } catch { return null; } })() } : { reports: REPORTS.t7 ?? null };
+        writeFileSync('/tmp/jarvis-t7-evidence.json', JSON.stringify(snap, null, 2) + '\n');
+      } catch (e) { console.log(`  evidence dump failed: ${e}`); }
+    }
   });
 
   await phase('T8 cancel (FR-11)', async () => {
@@ -402,8 +438,8 @@ test('M7 release hardening E2E', async () => {
   // final verdict + report — written even when earlier phases failed
   const failed = Object.entries(results).filter(([, r]) => !r.ok);
   const verdict = failed.length === 0 ? 'YES' : 'NO';
-  const report = { generatedAt: new Date().toISOString(), verdict, readyForV0_1_0_RC: verdict, failed: failed.map(([n, r]) => ({ phase: n, detail: r.detail })), results, evidence: REPORTS };
+  const report = { generatedAt: new Date().toISOString(), verdict, readyForV0_1_0_RC: verdict, filter: M7_ONLY.length ? M7_ONLY : null, failed: failed.map(([n, r]) => ({ phase: n, detail: r.detail })), results, evidence: REPORTS };
   try { writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2) + '\n'); } catch { /* best effort */ }
-  console.log(`\n${failed.length === 0 ? '' : 'FAILED PHASES:\n' + failed.map(([n, r]) => `  ✖ ${n}: ${r.detail}`).join('\n')}\nREADY_FOR_V0.1.0_RC: ${verdict}  (report: ${REPORT_PATH})`);
+  console.log(`\n${failed.length === 0 ? '' : 'FAILED PHASES:\n' + failed.map(([n, r]) => `  ✖ ${n}: ${r.detail}`).join('\n')}\nREADY_FOR_V0.1.0_RC: ${verdict}  (report: ${REPORT_PATH}${M7_ONLY.length ? `, filter: ${M7_ONLY.join(',')}` : ''})`);
   assert.equal(failed.length, 0, `M7 phases failed: ${failed.map(([n]) => n).join(', ')}`);
 });
