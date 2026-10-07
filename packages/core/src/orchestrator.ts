@@ -78,8 +78,18 @@ export class Orchestrator {
   async pause(taskId: string): Promise<Task> {
     const task = await this.store.load(taskId);
     if (['PAUSED', 'COMPLETED', 'CANCELLED', 'FAILED'].includes(task.status)) return task;
-    this.pausedDuringPlanning.set(taskId, task.status === 'WAITING_FOR_CHATGPT' || task.status === 'PLANNING');
-    this.planningAttemptId.set(taskId, 0); // reset attempt ID on pause
+    const pausedDuringPlanning = task.status === 'WAITING_FOR_CHATGPT' || task.status === 'PLANNING';
+    this.pausedDuringPlanning.set(taskId, pausedDuringPlanning);
+    if (pausedDuringPlanning) {
+      // Invalidate the currently active planning generation.
+      // Attempt IDs must remain monotonic for the lifetime of the task.
+      const currentAttemptId = this.planningAttemptId.get(taskId) ?? 0;
+      this.planningAttemptId.set(taskId, currentAttemptId + 1);
+    } else {
+      // Branch B guard compares get() against prevAttemptId: keep an entry so
+      // undefined never mismatches 0 (non-planning pause must not invalidate).
+      this.planningAttemptId.set(taskId, this.planningAttemptId.get(taskId) ?? 0);
+    }
     await this.store.transition(task, 'PAUSED');
     await this.store.emit(task, 'core', 'pause_requested', 'warning');
     return task;
@@ -97,6 +107,13 @@ export class Orchestrator {
     return false;
   }
 
+  /** Terminal states are never resumed: drop per-task planning-lifecycle
+   *  entries so stale generations cannot influence later behavior. */
+  private clearPlanningLifecycle(taskId: string): void {
+    this.pausedDuringPlanning.delete(taskId);
+    this.planningAttemptId.delete(taskId);
+  }
+
   /** RESUME: continue safely from persisted task state.
    *  In-flight loop (paused at a checkpoint): clear flags + set disk EXECUTING —
    *  the loop continues at its next checkpoint. Loop not in-flight: re-enter. */
@@ -111,26 +128,30 @@ export class Orchestrator {
       return task;
     }
     const prevAttemptId = this.planningAttemptId.get(taskId) ?? 0;
+    let expectedAttemptId = prevAttemptId;
     // planResponse declared at function scope; assigned in one of two branches below.
     let planResponse: string | null = null;
 
     if (this.pausedDuringPlanning.get(taskId)) {
       // --- BRANCH A: task was paused during WAITING_FOR_CHATGPT or PLANNING ---
-      // Issue 2: do NOT wait 300s. Immediately re-initiate planning.
-      // Issue 3: increment attempt ID so any stale response from a prior
-      // attempt is ignored when it eventually arrives.
-      const newAttemptId = (prevAttemptId || 0) + 1;
+      // Do NOT wait 300s. Immediately re-initiate planning with a NEW
+      // monotonic attempt generation (pause already invalidated the old one).
+      const newAttemptId = prevAttemptId + 1;
       this.planningAttemptId.set(taskId, newAttemptId);
+      expectedAttemptId = newAttemptId;
       await this.store.emit(task, 'core', 'resume_replan_from_pause', 'info', { attemptId: newAttemptId });
       const freshPlan = await this.chatgpt.ask(
         this.opts.plannerPromptTemplate.replace('{{OWNER_REQUEST}}', task.owner_request)
       );
+      // Validate BEFORE writing: a stale response must never overwrite chatgpt-plan.md.
+      if (this.planningAttemptId.get(taskId) !== newAttemptId) {
+        await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
+        return task;
+      }
       const dir = this.store.taskDir(taskId);
       await writeFile(path.join(dir, 'chatgpt-plan.md'), freshPlan).catch(() => {});
-      // Only accept the response if this attempt is still the current one
-      if (this.planningAttemptId.get(taskId) === newAttemptId) {
-        planResponse = freshPlan;
-      }
+      planResponse = freshPlan;
+      this.pausedDuringPlanning.delete(taskId);
     } else {
       // --- BRANCH B: task was NOT paused during planning (original behavior) ---
       // Issue 5: preserve the existing fallback path exactly.
@@ -151,7 +172,7 @@ export class Orchestrator {
         }
       }
       // Issue 4: verify attempt ID matches before proceeding
-      if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+      if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
         // a newer attempt already superseded this one; ignore response
         return task;
       }
@@ -163,10 +184,11 @@ export class Orchestrator {
       await this.store.save(task).catch(() => {});
       await this.store.transition(task, 'CANCELLED').catch(async () => { await this.store.save(task); });
       await this.store.emit(task, 'core', 'task_resume_aborted_no_plan', 'error');
+      this.clearPlanningLifecycle(taskId);
       return task;
     }
-    // Issue 4: double-check attempt ID after we have a plan response
-    if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+    // double-check attempt ID after we have a plan response
+    if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
       await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
       return task;
     }
@@ -182,7 +204,7 @@ export class Orchestrator {
     } catch { /* fall back to empty spec */ }
     // Triple-check attempt ID after parsing — protect against race where
     // a stale response arrives after we've already started a new attempt.
-    if (this.planningAttemptId.get(taskId) !== prevAttemptId) {
+    if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
       await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
       return task;
     }
@@ -207,6 +229,7 @@ export class Orchestrator {
     await this.chatgpt.abort();
     await this.store.transition(task, 'CANCELLED').catch(async () => { await this.store.save(task); });
     await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+    this.clearPlanningLifecycle(taskId);
     return task;
   }
 
@@ -268,6 +291,7 @@ export class Orchestrator {
       }
       await this.store.save(task);
       await this.store.emit(task, 'core', 'task_failed', 'error', { error: task.last_error });
+      this.clearPlanningLifecycle(task.id);
       throw e;
     } finally {
       await this.chatgpt.close();
@@ -287,6 +311,7 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
       if (this.cancelRequested) {
         await this.store.transition(task, 'CANCELLED').catch(() => {});
         await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+        this.clearPlanningLifecycle(task.id);
         return;
       }
       // consult authoritative disk state (pause/cancel may have arrived mid-ask)
@@ -335,6 +360,7 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
         await this.store.emit(task, 'opencode', 'session_exit', 'warning', { exitCode, cancelled: true });
         await this.store.transition(task, 'CANCELLED').catch(() => {});
         await this.store.emit(task, 'core', 'task_cancelled', 'warning');
+        this.clearPlanningLifecycle(task.id);
         return;
       }
       if (this.pauseRequested) {
@@ -361,6 +387,7 @@ Do NOT modify, delete, or move anything outside that directory (especially not t
           task.result = 'Verified: ' + report.steps.map((s) => `✔ ${s.name}`).join('; ');
           await this.store.transition(task, 'COMPLETED');
           await this.store.emit(task, 'verifier', 'task_completed', 'info');
+          this.clearPlanningLifecycle(task.id);
           await this.reviewWithBot(task, report, dir);
           return;
         }
