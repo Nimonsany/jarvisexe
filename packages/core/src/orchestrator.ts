@@ -92,6 +92,13 @@ export class Orchestrator {
     }
     await this.store.transition(task, 'PAUSED');
     await this.store.emit(task, 'core', 'pause_requested', 'warning');
+    if (pausedDuringPlanning) {
+      // The in-flight planner ask must die now: disk already says PAUSED, so
+      // run() unwinds via diskWins and closes the browser. Without this,
+      // resume()'s fresh ask would double-drive the same page as the original
+      // one (two asks livelock → resume POST hangs → client timeout).
+      await this.chatgpt.abort();
+    }
     return task;
   }
 
@@ -140,6 +147,9 @@ export class Orchestrator {
       this.planningAttemptId.set(taskId, newAttemptId);
       expectedAttemptId = newAttemptId;
       await this.store.emit(task, 'core', 'resume_replan_from_pause', 'info', { attemptId: newAttemptId });
+      // pause() aborted the browser and run()'s unwinding closed it — relaunch
+      // (idempotent) so the fresh ask never drives a closed/foreign page.
+      await this.chatgpt.launch();
       const freshPlan = await this.chatgpt.ask(
         this.opts.plannerPromptTemplate.replace('{{OWNER_REQUEST}}', task.owner_request)
       );

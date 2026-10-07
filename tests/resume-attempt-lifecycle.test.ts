@@ -22,9 +22,12 @@ function makeOrch() {
   });
   let askImpl: () => Promise<string> = async () => PLAN;
   let askCalls = 0;
+  let abortCalls = 0;
+  let launchCalls = 0;
   (orch as any).chatgpt = {
     ask: () => { askCalls++; return askImpl(); },
-    abort: async () => {},
+    abort: async () => { abortCalls++; },
+    launch: async () => { launchCalls++; },
     close: async () => {},
   };
   let starts = 0;
@@ -34,6 +37,8 @@ function makeOrch() {
     runtimeDir,
     store: orch.taskStore as TaskStore,
     getAskCalls: () => askCalls,
+    getAbortCalls: () => abortCalls,
+    getLaunchCalls: () => launchCalls,
     getStarts: () => starts,
     setAsk: (fn: () => Promise<string>) => { askImpl = fn; },
     cleanup: () => rmSync(runtimeDir, { recursive: true, force: true }),
@@ -59,11 +64,13 @@ test('A: valid resumed plan is accepted, not classified stale, execution starts 
   try {
     const task = await planningTask(h);
     await h.orch.pause(task.id); // pause during WAITING_FOR_CHATGPT
+    assert.equal(h.getAbortCalls(), 1, 'pause during planning must abort the in-flight ask');
 
     const resumed = await h.orch.resume(task.id);
     const events = await h.store.events(task.id);
 
     assert.equal(resumed.status, 'EXECUTING', 'fresh resumed plan must transition to EXECUTING');
+    assert.equal(h.getLaunchCalls(), 1, 'Branch A must relaunch the browser before the fresh ask');
     assert.equal(h.getStarts(), 1, 'OpenCode execution must start exactly once');
     assert.ok(
       !events.some((e) => e.event === 'planner_response_stale'),
@@ -150,6 +157,8 @@ test('C: attempt IDs monotonic across multiple pause/resume cycles, never reset/
     }
     assert.deepEqual(ids, [2, 4], 'expected progression 2 -> 4 with no reset/reuse');
     assert.equal(h.getStarts(), 2, 'one execution start per accepted cycle');
+    assert.equal(h.getAbortCalls(), 2, 'each planning pause aborts the in-flight ask');
+    assert.equal(h.getLaunchCalls(), 2, 'each Branch-A resume relaunches the browser');
   } finally {
     h.cleanup();
   }
@@ -185,6 +194,8 @@ test('D: Branch B (pause outside planning) keeps original plan-file resume path'
       'Branch B with matching attempt must not be rejected stale',
     );
     assert.equal(readFileSync(path.join(dir, 'chatgpt-plan.md'), 'utf8'), PLAN, 'plan file untouched');
+    assert.equal(h.getAbortCalls(), 0, 'pause outside planning must not touch the browser');
+    assert.equal(h.getLaunchCalls(), 0, 'Branch B needs no browser (plan file only)');
   } finally {
     h.cleanup();
   }
