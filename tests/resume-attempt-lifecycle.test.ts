@@ -200,3 +200,39 @@ test('D: Branch B (pause outside planning) keeps original plan-file resume path'
     h.cleanup();
   }
 });
+
+test('E: recovery PAUSED (no pause() ever, empty attempt map) resumes to EXECUTING', async () => {
+  const h = makeOrch();
+  try {
+    const task = await h.store.create('interrupted task', '/tmp/proj');
+    await h.store.transition(task, 'PLANNING');
+    await h.store.transition(task, 'WAITING_FOR_CHATGPT');
+    await h.store.transition(task, 'PLAN_RECEIVED');
+    await h.store.transition(task, 'PREPARING_EXECUTION');
+    await h.store.transition(task, 'EXECUTING');
+    const dir = h.store.taskDir(task.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'chatgpt-plan.md'), PLAN);
+
+    // boot recovery marks PAUSED directly — no pause(), so planningAttemptId
+    // and pausedDuringPlanning stay empty (fresh process after kill -9)
+    await h.store.transition(task, 'PAUSED');
+    assert.equal((h.orch as any).planningAttemptId.get(task.id), undefined, 'attempt map is empty');
+
+    const resumed = await h.orch.resume(task.id);
+    const events = await h.store.events(task.id);
+
+    assert.equal(resumed.status, 'EXECUTING', 'recovery resume must re-enter work, not silently no-op');
+    assert.equal(h.getStarts(), 1, 'execution starts once');
+    assert.ok(
+      events.some((e) => e.event === 'task_resumed'),
+      'task_resumed emitted',
+    );
+    assert.ok(
+      !events.some((e) => e.event === 'planner_response_stale'),
+      'empty attempt map must not read as a stale generation',
+    );
+  } finally {
+    h.cleanup();
+  }
+});

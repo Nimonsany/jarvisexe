@@ -182,7 +182,9 @@ export class Orchestrator {
         }
       }
       // Issue 4: verify attempt ID matches before proceeding
-      if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
+      // ?? 0: recovery marks PAUSED without pause() ever seeding this map —
+      // `undefined !== 0` would silently no-op the resume (T9: 200 but PAUSED).
+      if ((this.planningAttemptId.get(taskId) ?? 0) !== expectedAttemptId) {
         // a newer attempt already superseded this one; ignore response
         return task;
       }
@@ -198,7 +200,7 @@ export class Orchestrator {
       return task;
     }
     // double-check attempt ID after we have a plan response
-    if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
+    if ((this.planningAttemptId.get(taskId) ?? 0) !== expectedAttemptId) {
       await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
       return task;
     }
@@ -214,7 +216,7 @@ export class Orchestrator {
     } catch { /* fall back to empty spec */ }
     // Triple-check attempt ID after parsing — protect against race where
     // a stale response arrives after we've already started a new attempt.
-    if (this.planningAttemptId.get(taskId) !== expectedAttemptId) {
+    if ((this.planningAttemptId.get(taskId) ?? 0) !== expectedAttemptId) {
       await this.store.emit(task, 'core', 'planner_response_stale', 'warning', { attemptId: this.planningAttemptId.get(taskId) });
       return task;
     }
