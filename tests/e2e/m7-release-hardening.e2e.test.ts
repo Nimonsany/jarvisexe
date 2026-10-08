@@ -346,10 +346,13 @@ test('M7 release hardening E2E', async () => {
   });
 
   await phase('T9 kill -9 → restart recovery (FR-12/13)', async () => {
-    const id = await postTask(
+    let t9id = '';
+    try {
+    t9id = await postTask(
       'Create a Node script add.js exporting add(a,b) plus a check-add.js test proving add(2,3)===5, and run the test. Keep both files in the project directory.',
       WORKSPACE,
     );
+    const id = t9id;
     await until(`task ${id} mid-flight`, async () => {
       const s = (await taskOf(id)).status;
       return ['EXECUTING', 'MONITORING', 'TESTING', 'VERIFYING'].includes(s);
@@ -377,6 +380,14 @@ test('M7 release hardening E2E', async () => {
     assert.ok(cc.ok, `cancel after recovery → ${cc.status}`);
     await until(`task ${id} CANCELLED`, async () => (await taskOf(id)).status === 'CANCELLED', 60, 2000);
     REPORTS.t9 = { taskId: id, orphansBefore };
+    } finally {
+      // T12 deletes M7_ROOT even on failure — dump evidence first
+      try {
+        const snap = t9id ? await taskOf(t9id) : null;
+        writeFileSync('/tmp/jarvis-t9-evidence.json', JSON.stringify({ task: snap }, null, 2) + '\n');
+      } catch (e) { console.log(`  t9 evidence dump failed: ${e}`); }
+      try { const lg = readFileSync(path.join(M7_ROOT, 'logs/core.log'), 'utf8'); writeFileSync('/tmp/jarvis-t9-core.log', lg.slice(-400_000)); } catch (e) { console.log(`  t9 core log dump failed: ${e}`); }
+    }
   });
 
   await phase('T10 relaunch — history + no duplicates (FR-15)', async () => {
