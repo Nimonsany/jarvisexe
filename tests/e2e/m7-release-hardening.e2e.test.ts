@@ -392,7 +392,10 @@ test('M7 release hardening E2E', async () => {
 
   await phase('T10 relaunch — history + no duplicates (FR-15)', async () => {
     const before = (await (await api('/api/tasks')).json()) as { id: string }[];
-    assert.ok(before.length >= 4, `history present before relaunch (${before.length})`);
+    // full run: T6+T7+T8+T9 each create a task; filtered T6 creates none —
+    // floor = task-creating phases that actually ran this run
+    const minHistory = M7_ONLY.length ? M7_ONLY.filter((p) => ['T7', 'T8', 'T9'].includes(p)).length : 4;
+    assert.ok(before.length >= minHistory, `history present before relaunch (${before.length})`);
     sh(path.join(SCRIPTS, 'm7-clean-install.sh'), ['stop'], 60_000);
     assert.equal(corePids().length, 0, 'core fully stopped');
     sh(path.join(SCRIPTS, 'm7-clean-install.sh'), ['launch-core', '240'], 600_000);
