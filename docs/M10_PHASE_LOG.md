@@ -217,3 +217,158 @@ rc14-era recheck in progress (Phase 13).
   objective prompt; late plan (+10s) → waited 12s → EXECUTING; no plan →
   CANCELLED at 301s with clear error. Minimal T7 repro of pause/resume
   mechanics PASSED on `c60c1db`.
+
+## Phases 32-33 — Final full regression at `f0367c9` + rc15 cut
+
+**Phase 32 — full regression at rc15 candidate `f0367c9` (clean tree):**
+
+| Suite | Result | Evidence |
+|---|---|---|
+| root unit (tsx) | **47/47**, 12.1s, exit 0 | incl. resume-attempt-lifecycle **5/5** (new Test E), m8-ownership **6/6** |
+| **m7 full (no filter)** | **13/13**, 21min, `filter: null`, `READY_FOR_V0.1.0_RC: YES` | `/tmp/jarvis-m7-full-f0367c9.log`, `m7-report.json` (failed: []) |
+| m7 T7 gate metrics @this HEAD | stale=0, task_resumed=1, sessionStarts=1, resume→resumed **58s** (<300) | `/tmp/jarvis-t7-evidence.json` |
+| **m8 GUI clean-install** | **P1–P9 green**, 11.6min | `/tmp/jarvis-m8-f0367c9.log` |
+| **m9 updater E2E** | **green**, 18min (A/B builds + signed update flow) | `/tmp/jarvis-m9-f0367c9.log` |
+| diagnostic (not counted as full M7) | T7-only green @`ec1dabd` (19min); T8–T11 green @`f0367c9` (7.6min) | `/tmp/jarvis-t7-ec1dabd.log`, `/tmp/jarvis-t8-11-r2.log` |
+
+**Root causes found+fixed in this cycle (every T7/T9 failure):**
+
+- `b39bac2` **attempt lifecycle**: `resume()` Branch A compared stale guards
+  against `prevAttemptId` instead of the new `expectedAttemptId` → valid
+  resumed response classified stale → task stuck PAUSED → T7 1800s timeout.
+  Regression tests A/B/C fail on `efc3499`, pass on fix.
+- `7c917c4` **pause/resume livelock**: `pause()` during WAITING_FOR_CHATGPT
+  left run()'s in-flight `chatgpt.ask` driving the page; resume issued a
+  second concurrent ask → livelock → resume POST exceeded undici 300s →
+  `TypeError: fetch failed` (both failed T7 runs). `pause()` now aborts the
+  ask AFTER PAUSED is persisted; resume Branch A relaunches the browser
+  (idempotent) before the fresh ask.
+- `aa44885` **recovery resume no-op**: boot recovery marks PAUSED without
+  `pause()` ever seeding `planningAttemptId` in the fresh process → Branch B
+  guard `get() !== expectedAttemptId` compared `undefined !== 0` → silent
+  200 return, task never re-entered work (T9 600s timeout; evidence: zero
+  resume-path events, status still PAUSED). All three attempt compares now
+  `?? 0` (pause()'s own comment at the guard already documented this trap).
+  Regression Test E fails on old code, passes on fix.
+- Test-infra (not product): `9e1ad86` `JARVIS_M7_ONLY` filter for isolated
+  phase diagnosis; `ec1dabd`/`7c2ba16` evidence dumps (task/events + core
+  log) to /tmp before T12 deletes the root; `f0367c9` T10 history floor is
+  filter-aware (filtered T6 creates no task → full-run floor 4 only).
+- Environment (not product): ChatGPT web session expired mid-cycle →
+  re-login into `runtime/browser-profile` (verified by scripted ask
+  `ASK_OK`); transient `ERR_INTERNET_DISCONNECTED` killed one T9 run
+  (relaunched green); opencode `--version` transiently hung ~25min while
+  the user's TUI sessions refreshed `models.json` (unit suite hung on the
+  probe child — re-ran green after refresh); box load1m 79 / swap 81%
+  during runs (T13 recorded `resource-pressure`, never fatal).
+
+**Phase 33 — rc15 cut:** `v0.1.0-rc15` = `f0367c9` (clean tree, fully
+regression-tested per Phase 32, pushed). Release run **37874610552**: all 5
+jobs green (Gate 30s · macOS DMG 4m41s · Linux 5m3s · Windows 5m21s · Draft
+11s) → **draft, 19 assets, NOT published**.
+
+## Phase 34 — signing gate re-affirmation at rc15
+
+Secrets absent → byte-identical skip path (Phases 14-16 pipeline, `3c8fe96`).
+CI `macos-codesign.txt`: `Signature=adhoc`, `TeamIdentifier=not set` →
+`DEVELOPER_ID_SIGNED=NO · NOTARIZED=NO · AUTHENTICODE=NO` — never faked.
+Credential interface + generation steps: `docs/SIGNING_SECRETS.md`.
+Owner blocker unchanged.
+
+## Phase 35 — rc15 asset/audit re-scan
+
+- **19/19 assets present** (123MB downloaded); **SHA256SUMS 17/17 verified**.
+- `inspect-artifact.py` on dmg/AppImage/deb/setup.exe/msi locally: **clean**
+  (CI ran the same per-platform step in every job, green).
+- Phase-25/27 fixes verified on rc15 outputs: `build-info-macos.json.arch`
+  = `"arm64"` (non-empty), SBOM **470 packages** (npm prod + Cargo.lock),
+  release-notes tag prefix stripped.
+- `latest.json`: `darwin-aarch64` only — x64 macOS updater-feed gap
+  persists (M9 gate item).
+
+## Phase 36 — Platform verdict evidence (rc15, HEAD `f0367c9`)
+
+| Platform | Artifacts (rc15) | Signing | Real-machine E2E | Verdict |
+|---|---|---|---|---|
+| **macOS (x64 + arm64)** | CI `arm64.dmg` + `.app.tar.gz` + `.sig`; local x64 DMG for E2E | **Ad-hoc only** | **YES @rc15 HEAD** — m7 13/13, m8 9/9, m9 updater, unit 47/47, clean-install lifecycle, uninstall clean | **TECHNICALLY PASS — distribution blocked on signing credentials** |
+| **Windows** | `setup.exe` + `.sig`, `.msi` (unsigned) | No Authenticode | **YES @rc14-era** — GH-hosted windows-latest clean runner: NSIS install → sidecar spawn → core online → login-required → cancel → Job-Object quit → history → ownership PASS → uninstall ✓ (rc15 delta is platform-neutral core/resume + test-infra; not re-run) | **PASS (rc14 artifacts) — blocked on signing cert** |
+| **Linux (amd64)** | `AppImage` + `.sig`, `.deb` (unsigned) | No GPG/repo signing | **YES @rc14-era** — ubuntu:24.04 Docker, 19/19: DEB deps → health → handshake → graceful ChatGPT/node fail → ownership stop → uninstall; AppImage extract/start/stop ✓ (rc15 delta platform-neutral; not re-run) | **PASS (rc14 artifacts) — unsigned** |
+
+Manifests: `release-manifest.json` + `SHA256SUMS.txt` (17/17) +
+`sbom.spdx.json` (470) + `latest.json` (3 platforms, updater sigs present).
+
+## Phase 37 — Stable-release gate decision
+
+**READY_FOR_V0.1.0_STABLE: NO**
+
+1. No signing credentials on any platform: macOS ad-hoc only (no Developer
+   ID, no notarization), Windows unsigned (no Authenticode), Linux unsigned.
+2. Windows/Linux real E2E last ran on **rc14-era** artifacts (rc15's 8
+   platform-neutral commits not re-verified on those runners).
+3. x64 macOS updater artifact absent from `latest.json` (CI runner arm64).
+4. ChatGPT automation depends on a manually-established web session
+   (expired sessions require owner re-login — documented clean-machine
+   behavior, but a stable-grade gate item).
+
+`v0.1.0` is **not created** and must not be created until: signing
+credentials exist, Windows/Linux E2E re-runs green on the tagged build,
+x64 ships in the updater feed, and a re-cut RC passes the full gate.
+
+## Phase 38 — rc15 publish decision
+
+`v0.1.0-rc15` exists as a **draft** (owner decision pending; publishing is
+an owner-level public action). `releases/latest/download/*` only resolves
+once a non-prerelease is published.
+
+## Phase 39 — What changed vs rc14 (release-engineering ledger, 28 commits)
+
+- **Signing pipelines** `1b0330e`/`3c8fe96` (secrets-gated Developer ID +
+  notarization + Authenticode injection; skip cleanly, verdicts stay NO).
+- **TCC watcher made real** `b8140ed`/`5ad7807` (extracted AppleScript,
+  live target detection, start regression 8/8 — was silently clicking
+  nothing since v1).
+- **Audit NEEDS_DIAGNOSTIC fixes** `0df3e18`/`11963d7`: pre-create task
+  failures surfaced with reason; `GITHUB_ENV` arch export (empty
+  `build-info.arch`); SBOM 8→470 packages; release-notes `v`-prefix strip.
+- **Crash/reinstall/uninstall safety** `63819a8`/`96c952e`/`20e301d`:
+  kill -9 recovery asserts, reinstall-over-existing history, uninstall
+  user-data survival, pwsh `/api/tasks` normalization, exit-code fixes.
+- **Linux/Windows E2E fix cycle** `b6af4df`/`8028da8`/`6093a25`/
+  `aa407f4`/`a351c44` (token via docker exec, DEB singular route, zombie-
+  aware SIGKILL, 120s POST timeout, clock-jump-tolerant late poll) → final
+  19/19 `LINUX_E2E_PASS: yes`.
+- **T7 resume-before-plan race** `c0a81ee` (wait for late plan, resume with
+  full plan-derived objective — kills the false-COMPLETED smoke).
+- **This cycle's pause/resume/recovery hardening**: `efc3499` continuity
+  guards · `b39bac2` attempt-ID lifecycle (stale vs expected) · `7c917c4`
+  abort-ask-on-pause + relaunch-on-resume (undici 300s livelock) ·
+  `aa44885` recovery `undefined!==0` silent resume no-op · test infra
+  `9e1ad86`/`ec1dabd`/`7c2ba16`/`f0367c9`.
+
+## Phase 40 — REQUIRED FINAL REPORT
+
+**M10 — Cross-Platform Runtime Certification & Signing Gate**
+
+Result: all phases executed through 40. Final regression at `f0367c9`
+green (unit 47/47, m7 full 13/13, m8 9/9, m9 updater green); every T7/T9
+failure root-caused and fixed with regression tests; rc15 cut from the
+tested commit, CI release all-5-green, draft with 19 assets, SHA256SUMS
+17/17, artifact scan clean.
+
+Platform verdicts:
+- macOS: TECHNICALLY PASS (full E2E at rc15 HEAD) — blocked on Developer
+  ID/notarization (ad-hoc only).
+- Windows: PASS on rc14-era clean-runner E2E — blocked on Authenticode.
+- Linux: PASS on rc14-era Docker E2E — unsigned.
+
+**READY_FOR_V0.1.0_STABLE: NO** — blocked on signing credentials, Win/Linux
+re-run on the tagged build, x64 updater feed. `v0.1.0` intentionally NOT
+created.
+
+Environment (not product): expired ChatGPT web session (owner re-login);
+one transient network drop killed a T9 run (re-ran green); opencode
+`--version` transient hang during TUI `models.json` refresh (suite re-ran
+green); load1m 79 / swap 81% pressure recorded by T13, never fatal.
+
+Pending owner decisions: publish the rc15 draft; obtain signing
+credentials (`docs/SIGNING_SECRETS.md`) before any stable tag.
